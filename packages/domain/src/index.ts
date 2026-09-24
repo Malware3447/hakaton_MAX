@@ -1,4 +1,9 @@
 // Домен перевозки: контракты, машина состояний, правила «чей ход».
-// Без базы и сети. Наполняется в HAKATON-21 (контракты) и HAKATON-22 (домен).
+// Без базы и сети. Контракты — HAKATON-21, решение переходов и тесты — HAKATON-22.
 
-export const DOMAIN_VERSION = '0.0.0'
+export * from './enums.ts'
+export * from './commands.ts'
+export * from './view.ts'
+export * from './ports.ts'
+
+export const DOMAIN_VERSION = '0.1.0'
