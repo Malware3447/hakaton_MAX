@@ -17,7 +17,9 @@
     "start": "npm run start -w @nk/app",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "db:generate": "npm run db:generate -w @nk/app",
+    "db:reset": "npm run db:reset -w @nk/app"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",

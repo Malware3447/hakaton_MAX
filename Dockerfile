@@ -27,6 +27,9 @@ FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
 COPY --from=build /src/apps/app/dist ./dist
+COPY apps/app/drizzle ./drizzle
+COPY seed ./seed
+ENV MIGRATIONS_DIR=/app/drizzle SEED_PATH=/app/seed/plant-seed.json
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \
