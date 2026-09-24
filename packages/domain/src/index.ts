@@ -6,5 +6,6 @@ export * from './commands.ts'
 export * from './view.ts'
 export * from './ports.ts'
 export * from './machine.ts'
+export * from './inn.ts'
 
 export const DOMAIN_VERSION = '0.1.0'

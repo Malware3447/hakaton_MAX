@@ -1,0 +1,325 @@
+import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OutMessage, type Role } from '@nk/domain'
+import type { FastifyBaseLogger } from 'fastify'
+import { esc } from '../max/messenger.ts'
+import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
+import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
+import type { BotStore, DialogState, PersonRow } from './store.ts'
+
+// Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
+// Спецификация — docs/roli-i-menyu.md.
+
+type Step = 'inn' | 'confirm' | 'taken' | 'manual_name' | 'manual_address' | 'sign_mode' | 'poa_number' | 'poa_date' | 'erp'
+
+interface FormCtx {
+  role: Role
+  history: Step[]
+  inn?: string
+  req?: { inn: string; kpp: string | null; name: string; address: string }
+  verified?: boolean
+  takenBy?: string
+  canSign?: boolean
+  poaNumber?: string | null
+  poaValidTo?: string | null
+}
+
+type Reply = { kind: 'callback'; callbackId: string } | { kind: 'message'; userId: number }
+
+const FORM = 'form'
+const TEXT_STEPS: Step[] = ['inn', 'manual_name', 'manual_address', 'poa_number', 'poa_date']
+const nav = [cb('Назад', P.back), cb('В меню', P.toMenu)]
+
+const fullName = (u: MaxUser) => [u.first_name, u.last_name].filter(Boolean).join(' ')
+
+function parseRuDate(s: string): Date | null {
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s.trim())
+  if (!m) return null
+  const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 21)) // конец дня по Москве
+  return d.getUTCDate() === Number(m[1]) ? d : null
+}
+
+export class Bot {
+  constructor(
+    private readonly store: BotStore,
+    private readonly messenger: Messenger,
+    private readonly directory: OrgDirectory,
+    private readonly log: FastifyBaseLogger,
+  ) {}
+
+  async handle(u: MaxUpdate): Promise<void> {
+    if (u.update_type === 'bot_started' && 'user' in u) {
+      const p = await this.store.upsertPerson(u.user.user_id, fullName(u.user))
+      await this.store.clearDialog(p.id)
+      return this.showStart(p, { kind: 'message', userId: u.user.user_id })
+    }
+    if (u.update_type === 'message_created' && 'message' in u) {
+      const m = u.message
+      if (!m.sender || m.sender.is_bot || m.recipient.chat_type !== 'dialog') return
+      const p = await this.store.upsertPerson(m.sender.user_id, fullName(m.sender))
+      const reply: Reply = { kind: 'message', userId: m.sender.user_id }
+      const contact = m.body.attachments?.find((a) => a.type === 'contact')
+      if (contact) return this.onContact(contact, reply)
+      return this.onText(p, (m.body.text ?? '').trim(), reply)
+    }
+    if (u.update_type === 'message_callback' && 'callback' in u) {
+      const c = u.callback
+      const p = await this.store.upsertPerson(c.user.user_id, fullName(c.user))
+      return this.onButton(p, c.payload ?? '', { kind: 'callback', callbackId: c.callback_id })
+    }
+  }
+
+  // ---------- ответы ----------
+
+  private async reply(to: Reply, msg: OutMessage, notification: string | null = null) {
+    if (to.kind === 'callback') return this.messenger.answerCallback(to.callbackId, notification, msg)
+    await this.messenger.send(to.userId, msg)
+  }
+
+  private async notify(to: Reply, text: string) {
+    if (to.kind === 'callback') return this.messenger.answerCallback(to.callbackId, text)
+    await this.messenger.send(to.userId, { text })
+  }
+
+  // ---------- меню ----------
+
+  private async showStart(p: PersonRow, to: Reply) {
+    const roles = await this.store.roles(p.id)
+    const active = roles.find((r) => r.role === p.activeRole)
+    if (active) return this.showRole(p, active.role, to)
+    return this.reply(to, rootMenu(roles, null))
+  }
+
+  private async showRoot(p: PersonRow, to: Reply, note?: string) {
+    await this.store.clearDialog(p.id)
+    return this.reply(to, rootMenu(await this.store.roles(p.id), p.activeRole, note))
+  }
+
+  private async showRole(p: PersonRow, role: Role, to: Reply, note?: string) {
+    const r = (await this.store.roles(p.id)).find((x) => x.role === role)
+    if (!r) return this.showRoot(p, to)
+    if (p.activeRole !== role) await this.store.setActiveRole(p.id, role)
+    const erpShipments = r.role === 'shipper' && r.org ? await this.store.erpShipmentCount(r.org.inn) : undefined
+    return this.reply(to, roleMenu(r, { erpShipments, note }))
+  }
+
+  // ---------- входящие ----------
+
+  private async onText(p: PersonRow, text: string, to: Reply) {
+    if (text === '/start' || text.startsWith('/start ')) {
+      await this.store.clearDialog(p.id)
+      return this.showStart(p, to)
+    }
+    if (text === '/menu') return this.showRoot(p, to)
+    if (text === '/help') return this.reply(to, helpScreen)
+
+    const d = await this.store.getDialog(p.id)
+    if (d?.step.startsWith(`${FORM}:`)) return this.formText(p, d, text, to)
+    return this.reply(to, { text: 'Я понимаю кнопки и команды. Откройте меню:', buttons: [[cb('Меню ролей', P.root)]] })
+  }
+
+  private async onButton(p: PersonRow, payload: string, to: Reply) {
+    if (payload === P.root) return this.showRoot(p, to)
+    if (payload === P.help) return this.reply(to, helpScreen)
+    if (payload === P.company) {
+      const r = (await this.store.roles(p.id)).find((x) => x.role === p.activeRole)
+      return r ? this.reply(to, companyScreen(r)) : this.showRoot(p, to)
+    }
+    if (payload.startsWith('stub:')) return this.notify(to, 'Этот раздел появится в следующей версии')
+
+    const [kind, arg] = payload.split(':') as [string, string | undefined]
+    const role = ROLES.find((r) => r === arg)
+    if (kind === 'open' && role) {
+      await this.store.clearDialog(p.id)
+      return this.showRole(p, role, to)
+    }
+    if (kind === 'add' && role) return this.startForm(p, role, to)
+    if (kind === 'f') {
+      const d = await this.store.getDialog(p.id)
+      if (!d?.step.startsWith(`${FORM}:`)) return this.showRoot(p, to, 'Анкета устарела — начните заново.')
+      return this.formButton(p, d, payload, to)
+    }
+    this.log.warn({ payload }, 'неизвестная кнопка')
+    return this.showRoot(p, to)
+  }
+
+  /** Пересланный контакт. Назначение по контакту — HAKATON-44; пока показываем, что пришло. */
+  private async onContact(a: MaxAttachment, to: Reply) {
+    const info = a.payload?.max_info
+    const vcfName = /(?:^|\n)FN:(.*)/.exec(a.payload?.vcf_info ?? '')?.[1]?.trim()
+    this.log.info({ hasMaxInfo: Boolean(info), hasVcf: Boolean(a.payload?.vcf_info), hasHash: Boolean(a.payload?.hash) }, 'получен контакт')
+    const name = info ? fullName(info) : vcfName ?? 'без имени'
+    return this.reply(to, {
+      text: [
+        `Контакт: <b>${esc(name)}</b>`,
+        info ? 'Есть аккаунт MAX — бот сможет его найти.' : 'Аккаунта MAX у контакта нет — бот не сможет ему написать.',
+        '',
+        '<i>Назначение людей по контакту появится в следующей версии.</i>',
+      ].join('\n'),
+      buttons: [[cb('В меню', P.root)]],
+    })
+  }
+
+  // ---------- анкета роли ----------
+
+  private async startForm(p: PersonRow, role: Role, to: Reply) {
+    const roles = await this.store.roles(p.id)
+    if (roles.some((r) => r.role === role)) return this.showRole(p, role, to)
+    if (role === 'driver') {
+      // Решение 24.09: водитель заводит роль одним нажатием, организацию задаёт перевозчик
+      await this.store.addRole({ personId: p.id, role, org: null, canSign: false, poaNumber: null, poaValidTo: null })
+      return this.showRole({ ...p, activeRole: role }, role, to, 'Роль водителя добавлена.')
+    }
+    return this.goto(p, { role, history: [] }, 'inn', to, null)
+  }
+
+  private async goto(p: PersonRow, ctx: FormCtx, step: Step, to: Reply, from: Step | null, error?: string) {
+    const next: FormCtx = { ...ctx, history: from ? [...ctx.history, from] : ctx.history }
+    await this.store.setDialog(p.id, { step: `${FORM}:${step}`, context: next as unknown as Record<string, unknown> })
+    return this.reply(to, this.prompt(step, next, error))
+  }
+
+  private prompt(step: Step, ctx: FormCtx, error?: string): OutMessage {
+    const title = `<b>${ROLE_TITLE[ctx.role]}: подключение</b>`
+    const err = error ? `\n\n⚠️ ${error}` : ''
+    const t = (...lines: string[]) => [title, '', ...lines].join('\n') + err
+    switch (step) {
+      case 'inn':
+        return { text: t('Пришлите ИНН вашей компании — 10 цифр, у ИП 12.'), buttons: [nav] }
+      case 'confirm': {
+        const r = ctx.req!
+        return {
+          text: t('Нашли в справочнике:', '', `<b>${esc(r.name)}</b>`, `ИНН ${r.inn}${r.kpp ? `, КПП ${r.kpp}` : ''}`, esc(r.address), '', 'Это вы?'),
+          buttons: [[cb('Да, это мы', P.yes), cb('Нет', P.no)], nav],
+        }
+      }
+      case 'taken':
+        return {
+          text: t(
+            `Компания с ИНН ${ctx.inn} уже подключена в роли «${ROLE_TITLE[ctx.role].toLowerCase()}».`,
+            `Попросите приглашение у ${esc(ctx.takenBy ?? 'её администратора')}.`,
+          ),
+          buttons: [[cb('Ввести другой ИНН', P.otherInn)], [cb('В меню', P.toMenu)]],
+        }
+      case 'manual_name':
+        return { text: t(`ИНН ${ctx.inn} нет в справочнике. Введите реквизиты вручную — отметим их как непроверенные.`, '', 'Название компании:'), buttons: [nav] }
+      case 'manual_address':
+        return { text: t('Юридический адрес с индексом:'), buttons: [nav] }
+      case 'sign_mode':
+        return {
+          text: t('Вы только принимаете груз или ещё подписываете документы за компанию?'),
+          buttons: [[cb('Только принимаю', P.acceptOnly)], [cb('Принимаю и подписываю', P.acceptSign)], nav],
+        }
+      case 'poa_number':
+        return {
+          text: t('Номер машиночитаемой доверенности, по которой вы подписываете документы за компанию.', 'Можно указать позже — спросим перед первой подписью.'),
+          buttons: [[cb('Укажу позже', P.later)], nav],
+        }
+      case 'poa_date':
+        return { text: t(`Доверенность ${esc(ctx.poaNumber ?? '')}. До какого числа действует? Например, 31.10.2026`), buttons: [nav] }
+      case 'erp':
+        return {
+          text: t('Подключить учётную систему? Тогда отгрузки будут приходить сюда сами.', '', '<i>В этой версии учётная система — модель на демо-данных завода.</i>'),
+          buttons: [[cb('Подключить', P.erp)], [cb('Позже', P.later)], nav],
+        }
+    }
+  }
+
+  private afterOrg(ctx: FormCtx): { step: Step; ctx: FormCtx } {
+    if (ctx.role === 'consignee') return { step: 'sign_mode', ctx }
+    return { step: 'poa_number', ctx: { ...ctx, canSign: true } }
+  }
+
+  private async afterPoa(p: PersonRow, ctx: FormCtx, from: Step, to: Reply) {
+    if (ctx.role === 'shipper') return this.goto(p, ctx, 'erp', to, from)
+    return this.finish(p, ctx, false, to)
+  }
+
+  private async finish(p: PersonRow, ctx: FormCtx, erpLinked: boolean, to: Reply) {
+    const req = ctx.req!
+    await this.store.addRole({
+      personId: p.id,
+      role: ctx.role,
+      org: { ...req, verified: ctx.verified ?? true, erpLinked },
+      canSign: ctx.canSign ?? false,
+      poaNumber: ctx.poaNumber ?? null,
+      poaValidTo: ctx.poaValidTo ? new Date(ctx.poaValidTo) : null,
+    })
+    await this.store.clearDialog(p.id)
+    return this.showRole({ ...p, activeRole: ctx.role }, ctx.role, to, `Готово: роль «${ROLE_TITLE[ctx.role].toLowerCase()}» добавлена.`)
+  }
+
+  private async formText(p: PersonRow, d: DialogState, text: string, to: Reply) {
+    const step = d.step.slice(FORM.length + 1) as Step
+    const ctx = d.context as unknown as FormCtx
+    if (!TEXT_STEPS.includes(step)) return this.reply(to, this.prompt(step, ctx, 'Выберите вариант кнопкой.'))
+
+    switch (step) {
+      case 'inn': {
+        const inn = normalizeInn(text)
+        if (!inn) return this.goto(p, ctx, 'inn', to, null, 'Нужно 10 или 12 цифр.')
+        if (!isValidInn(inn)) return this.goto(p, ctx, 'inn', to, null, 'Такого ИНН не бывает: не сходится контрольная цифра.')
+        const existing = await this.store.orgByInn(inn)
+        const holder = existing ? await this.store.roleHolder(existing.id, ctx.role) : null
+        if (holder) return this.goto(p, { ...ctx, inn, takenBy: holder }, 'taken', to, 'inn')
+        const found = existing ?? (await this.directory.findByInn(inn))
+        if (found) return this.goto(p, { ...ctx, inn, req: { inn, kpp: found.kpp, name: found.name, address: found.address }, verified: existing?.verified ?? true }, 'confirm', to, 'inn')
+        return this.goto(p, { ...ctx, inn }, 'manual_name', to, 'inn')
+      }
+      case 'manual_name':
+        if (text.length < 3) return this.goto(p, ctx, step, to, null, 'Слишком коротко.')
+        return this.goto(p, { ...ctx, req: { inn: ctx.inn!, kpp: null, name: text, address: '' } }, 'manual_address', to, step)
+      case 'manual_address': {
+        if (text.length < 10) return this.goto(p, ctx, step, to, null, 'Нужен полный адрес с индексом.')
+        const next = this.afterOrg({ ...ctx, req: { ...ctx.req!, address: text }, verified: false })
+        return this.goto(p, next.ctx, next.step, to, step)
+      }
+      case 'poa_number':
+        if (text.length < 3) return this.goto(p, ctx, step, to, null, 'Слишком коротко.')
+        return this.goto(p, { ...ctx, poaNumber: text }, 'poa_date', to, step)
+      case 'poa_date': {
+        const date = parseRuDate(text)
+        if (!date) return this.goto(p, ctx, step, to, null, 'Дата в виде ДД.ММ.ГГГГ.')
+        if (date.getTime() < Date.now()) return this.goto(p, ctx, step, to, null, 'Доверенность уже истекла — укажите действующую.')
+        return this.afterPoa(p, { ...ctx, poaValidTo: date.toISOString() }, step, to)
+      }
+    }
+  }
+
+  private async formButton(p: PersonRow, d: DialogState, payload: string, to: Reply) {
+    const step = d.step.slice(FORM.length + 1) as Step
+    const ctx = d.context as unknown as FormCtx
+    switch (payload) {
+      case P.toMenu:
+        return this.showRoot(p, to)
+      case P.back: {
+        const prev = ctx.history.at(-1)
+        if (!prev) return this.showRoot(p, to)
+        return this.goto(p, { ...ctx, history: ctx.history.slice(0, -1) }, prev, to, null)
+      }
+      case P.yes:
+        if (step === 'confirm') {
+          const next = this.afterOrg(ctx)
+          return this.goto(p, next.ctx, next.step, to, step)
+        }
+        break
+      case P.no:
+      case P.otherInn:
+        if (step === 'confirm' || step === 'taken') return this.goto(p, { role: ctx.role, history: [] }, 'inn', to, null)
+        break
+      case P.later:
+        if (step === 'poa_number') return this.afterPoa(p, { ...ctx, poaNumber: null, poaValidTo: null }, step, to)
+        if (step === 'erp') return this.finish(p, ctx, false, to)
+        break
+      case P.erp:
+        if (step === 'erp') return this.finish(p, ctx, true, to)
+        break
+      case P.acceptOnly:
+        if (step === 'sign_mode') return this.finish(p, { ...ctx, canSign: false }, false, to)
+        break
+      case P.acceptSign:
+        if (step === 'sign_mode') return this.goto(p, { ...ctx, canSign: true }, 'poa_number', to, step)
+        break
+    }
+    // Нажата кнопка со старого шага — показываем текущий
+    return this.reply(to, this.prompt(step, ctx))
+  }
+}
