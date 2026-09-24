@@ -1,4 +1,4 @@
-import { ROLES, type Button, type OutMessage, type Role } from '@nk/domain'
+import { ROLES, type Button, type CommandType, type OutMessage, type Role } from '@nk/domain'
 import { esc } from '../max/messenger.ts'
 import type { RoleInfo } from './store.ts'
 
@@ -31,6 +31,19 @@ export const P = {
   otherInn: 'f:other_inn',
 } as const
 
+/** Коды нажатий для перевозок. id перевозки — uuid, код укладывается в лимит payload. */
+export const S = {
+  list: (page: number) => `sl:${page}`,
+  openErp: (ref: string) => `se:${ref}`,
+  view: (id: string) => `v:${id}`,
+  run: (cmd: CommandType, id: string) => `x:${cmd}:${id}`,
+  assignCarrier: (id: string) => `ac:${id}`,
+  decline: (id: string) => `dc:${id}`,
+  waiting: (role: Role) => `wl:${role}`,
+  offers: 'ol',
+  trips: (role: Role) => `tl:${role}`,
+}
+
 export const cb = (text: string, payload: string): Button => ({ text, kind: 'callback', payload })
 
 export const roleLabel = (r: RoleInfo) =>
@@ -61,29 +74,38 @@ export function rootMenu(roles: RoleInfo[], active: Role | null, note?: string):
 
 const switchRole = [cb('Сменить роль', P.root)]
 
-export function roleMenu(r: RoleInfo, extra: { erpShipments?: number; note?: string } = {}): OutMessage {
+export interface RoleMenuExtra {
+  note?: string
+  erpShipments?: number
+  waiting?: number
+  offers?: number
+}
+
+export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
   const head = [`<b>${esc(roleLabel(r))}</b>`]
   if (extra.note) head.push('', extra.note)
   const stub = (text: string, code: string) => [cb(text, P.stub(code))]
+  const n = (k: number | undefined) => (k ? ` (${k})` : '')
+  const waitingLine = `Ждут вас: ${extra.waiting ?? 0}`
   switch (r.role) {
     case 'shipper':
       return {
-        text: [...head, '', 'Ждут вас: 0'].join('\n'),
+        text: [...head, '', waitingLine].join('\n'),
         buttons: [
-          stub('Ждут меня', 'shipper.waiting'),
-          stub(`Отгрузки${extra.erpShipments ? ` (${extra.erpShipments})` : ''}`, 'shipper.shipments'),
-          stub('В пути', 'shipper.transit'),
+          [cb(`Ждут меня${n(extra.waiting)}`, S.waiting('shipper'))],
+          [cb(`Отгрузки${n(extra.erpShipments)}`, S.list(0))],
+          [cb('Мои перевозки', S.trips('shipper'))],
           [cb('Компания', P.company)],
           switchRole,
         ],
       }
     case 'carrier':
       return {
-        text: [...head, '', 'Ждут вас: 0'].join('\n'),
+        text: [...head, '', waitingLine].join('\n'),
         buttons: [
-          stub('Ждут меня', 'carrier.waiting'),
-          stub('Новые заявки', 'carrier.offers'),
-          stub('Мои рейсы', 'carrier.trips'),
+          [cb(`Ждут меня${n(extra.waiting)}`, S.waiting('carrier'))],
+          [cb(`Новые заявки${n(extra.offers)}`, S.offers)],
+          [cb('Мои рейсы', S.trips('carrier'))],
           stub('Машины и водители', 'carrier.fleet'),
           [cb('Компания', P.company)],
           switchRole,
@@ -102,7 +124,7 @@ export function roleMenu(r: RoleInfo, extra: { erpShipments?: number; note?: str
       }
     case 'consignee':
       return {
-        text: [...head, '', 'Ждут вас: 0'].join('\n'),
+        text: [...head, '', waitingLine].join('\n'),
         buttons: [stub('Ко мне едут', 'consignee.incoming'), stub('Приёмка', 'consignee.receiving'), [cb('Компания', P.company)], switchRole],
       }
   }

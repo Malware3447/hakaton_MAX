@@ -90,11 +90,12 @@ const BEFORE_T1: readonly State[] = ['draft', 'offered', 'carrier_accepted', 'as
 /**
  * Таблица переходов — основной путь и ветки MVP.
  * Реализация решения (decide) и тесты — HAKATON-22.
+ * Порядок строк — порядок кнопок в карточке: главное действие роли идёт первым.
  */
 export const TRANSITIONS: readonly Transition[] = [
   { command: 'shipper.offerCarrier', from: ['draft'], by: 'shipper', to: 'offered' },
-  { command: 'carrier.decline', from: ['offered'], by: 'carrier', to: 'draft' },
   { command: 'carrier.accept', from: ['offered'], by: 'carrier', to: 'carrier_accepted' },
+  { command: 'carrier.decline', from: ['offered'], by: 'carrier', to: 'draft' },
   { command: 'carrier.assign', from: ['carrier_accepted'], by: 'carrier', to: 'assigned' },
   { command: 'driver.acceptTrip', from: ['assigned'], by: 'driver', to: 'trip_accepted' },
   { command: 'driver.declineTrip', from: ['assigned', 'trip_accepted'], by: 'driver', to: 'carrier_accepted' },

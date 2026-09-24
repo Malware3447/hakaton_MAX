@@ -1,4 +1,6 @@
 import { MockDirectory } from './adapters/mock-directory.ts'
+import { MockErp } from './adapters/mock-erp.ts'
+import { ShipmentService } from './core/shipments.ts'
 import { buildApp, type AppDeps } from './app.ts'
 import { Bot } from './bot/bot.ts'
 import { BotStore } from './bot/store.ts'
@@ -22,7 +24,10 @@ if (env.DATABASE_URL) {
 
   if (env.MAX_MODE !== 'off' && env.MAX_BOT_TOKEN) {
     const api = new MaxApi(env.MAX_BOT_TOKEN)
-    const bot = new Bot(new BotStore(db), new MaxMessenger(api), new MockDirectory(db), app.log)
+    const me = await api.getMe()
+    const directory = new MockDirectory(db)
+    const shipments = new ShipmentService(db, new MockErp(db), directory)
+    const bot = new Bot(new BotStore(db), new MaxMessenger(api), directory, shipments, me.username, app.log)
     await api
       .setCommands([
         { name: 'menu', description: 'Меню ролей' },

@@ -4,6 +4,8 @@ import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
 import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
+import type { ShipmentService } from '../core/shipments.ts'
+import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
 // Спецификация — docs/roli-i-menyu.md.
@@ -22,7 +24,6 @@ interface FormCtx {
   poaValidTo?: string | null
 }
 
-type Reply = { kind: 'callback'; callbackId: string } | { kind: 'message'; userId: number }
 
 const FORM = 'form'
 const TEXT_STEPS: Step[] = ['inn', 'manual_name', 'manual_address', 'poa_number', 'poa_date']
@@ -38,12 +39,18 @@ function parseRuDate(s: string): Date | null {
 }
 
 export class Bot {
+  private readonly flows: ShipmentFlows
+
   constructor(
     private readonly store: BotStore,
     private readonly messenger: Messenger,
     private readonly directory: OrgDirectory,
+    shipments: ShipmentService,
+    botUsername: string,
     private readonly log: FastifyBaseLogger,
-  ) {}
+  ) {
+    this.flows = new ShipmentFlows(store, shipments, messenger, { reply: (to, m, n) => this.reply(to, m, n), notify: (to, t) => this.notify(to, t) }, botUsername, log)
+  }
 
   async handle(u: MaxUpdate): Promise<void> {
     if (u.update_type === 'bot_started' && 'user' in u) {
@@ -57,7 +64,11 @@ export class Bot {
       const p = await this.store.upsertPerson(m.sender.user_id, fullName(m.sender))
       const reply: Reply = { kind: 'message', userId: m.sender.user_id }
       const contact = m.body.attachments?.find((a) => a.type === 'contact')
-      if (contact) return this.onContact(contact, reply)
+      if (contact) {
+        const d = await this.store.getDialog(p.id)
+        if (d && (await this.flows.onContact(p, d, contact, reply))) return
+        return this.onContact(contact, reply)
+      }
       return this.onText(p, (m.body.text ?? '').trim(), reply)
     }
     if (u.update_type === 'message_callback' && 'callback' in u) {
@@ -98,7 +109,7 @@ export class Bot {
     if (!r) return this.showRoot(p, to)
     if (p.activeRole !== role) await this.store.setActiveRole(p.id, role)
     const erpShipments = r.role === 'shipper' && r.org ? await this.store.erpShipmentCount(r.org.inn) : undefined
-    return this.reply(to, roleMenu(r, { erpShipments, note }))
+    return this.reply(to, roleMenu(r, { erpShipments, note, ...(await this.flows.counts(p.id, role)) }))
   }
 
   // ---------- входящие ----------
@@ -113,10 +124,14 @@ export class Bot {
 
     const d = await this.store.getDialog(p.id)
     if (d?.step.startsWith(`${FORM}:`)) return this.formText(p, d, text, to)
+    if (d && (await this.flows.onText(p, d, text, to))) return
     return this.reply(to, { text: 'Я понимаю кнопки и команды. Откройте меню:', buttons: [[cb('Меню ролей', P.root)]] })
   }
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
+    // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
+    if (!payload.startsWith('f:') && !payload.startsWith('dq:')) await this.store.clearDialog(p.id)
+    if (await this.flows.onButton(p, payload, to)) return
     if (payload === P.root) return this.showRoot(p, to)
     if (payload === P.help) return this.reply(to, helpScreen)
     if (payload === P.company) {

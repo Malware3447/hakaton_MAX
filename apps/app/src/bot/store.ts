@@ -36,6 +36,11 @@ export class BotStore {
     return row!
   }
 
+  async personByMaxUserId(maxUserId: number): Promise<PersonRow | null> {
+    const [row] = await this.db.select().from(person).where(eq(person.maxUserId, maxUserId))
+    return row ?? null
+  }
+
   async roles(personId: string): Promise<RoleInfo[]> {
     const rows = await this.db
       .select({ m: membership, o: org })

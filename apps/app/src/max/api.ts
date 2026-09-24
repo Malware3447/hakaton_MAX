@@ -41,6 +41,10 @@ export class MaxApi {
     }
   }
 
+  getMe() {
+    return this.call<{ user_id: number; username: string; name: string }>('GET', '/me')
+  }
+
   getUpdates(marker: number | undefined, timeoutSec = 30) {
     return this.call<{ updates: MaxUpdate[]; marker?: number }>('GET', '/updates', {
       marker,
