@@ -21,9 +21,15 @@ export type PersonRef =
       }
     }
 
-/** Доказательства простой подписи нажатием кнопки в MAX. */
+/**
+ * Доказательства простой подписи нажатием кнопки в MAX.
+ * Номер спрашиваем один раз, перед первой подписью человека (решение 24.09):
+ * без подтверждённого номера бот сначала просит «Поделиться номером».
+ */
 export interface PepEvidence {
   maxUserId: number
+  /** sha256 номера, подтверждённого кнопкой request_contact (hash проверен по токену бота) */
+  phoneSha256: string
   callbackId: string
   messageMid: string
   buttonText: string
