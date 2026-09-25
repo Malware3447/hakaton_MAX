@@ -15,7 +15,8 @@ import { InviteService } from '../core/invite-service.ts'
 import { FleetService } from '../core/fleet.ts'
 import { CardStore } from './card-store.ts'
 import { TitleService } from '../core/titles.ts'
-import { MockOperator, type OperatorTask } from '../core/mock-operator.ts'
+import { MockEpd } from '../adapters/mock-epd.ts'
+import { OperatorLink, type OperatorTask } from '../core/operator-link.ts'
 import { SignatureService, type SignatureVerification } from '../core/signatures.ts'
 import { decode1251 } from '@nk/etrn'
 import { validateTitle } from '../../../../packages/etrn/src/testing/xsd.ts'
@@ -765,28 +766,30 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
   describe('подпись накладной', () => {
     const shipmentOf = async (ref: string) => (await conn.db.select().from(shipment).where(eq(shipment.erpRef, ref)))[0]!.id
-    // Модель оператора: отложенные шаги копятся в pending и выполняются drain(), часы двигаем сами
+    // Модель оператора: отложенные шаги копятся в pending, drain() выполняет их по очереди и двигает часы на их задержку
     const pending: [OperatorTask, string, string | undefined][] = []
+    const delays: number[] = []
     let clock = new Date('2026-09-26T10:00:00Z')
-    let operator: MockOperator
+    let epd: MockEpd
+    let operator: OperatorLink
     const drain = async () => {
-      while (pending.length) {
+      for (let n = 0; pending.length; n++) {
+        if (n > 50) throw new Error('отложенные шаги не кончаются')
         const [task, sid, arg] = pending.shift()!
+        clock = new Date(clock.getTime() + delays.shift()! * 1000)
         await operator.run(task, sid, arg)
       }
     }
     beforeAll(() => {
-      operator = new MockOperator(
-        conn.db,
-        svc,
-        new TitleService(conn.db),
-        {
-          onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
-          later: async (task, sid, _delay, arg) => void pending.push([task, sid, arg]),
-          sendQr: (sid, file) => bot.sendQrToDriver(sid, file),
+      epd = new MockEpd(conn.db, () => clock)
+      operator = new OperatorLink(conn.db, epd, svc, new TitleService(conn.db), {
+        onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
+        later: async (task, sid, delay, arg) => {
+          pending.push([task, sid, arg])
+          delays.push(delay)
         },
-        () => clock,
-      )
+        sendQr: (sid, file) => bot.sendQrToDriver(sid, file),
+      })
     })
     let id = ''
 
@@ -851,11 +854,11 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(3, `sg:T2:${id}`))
       expect(out.last?.text).toMatch(/оператор ещё не выдал номер накладной/)
       // Оператор недоступен минуту: титул примется, когда он «вернётся», без перезапуска
-      await operator.setUnavailable(60)
+      await epd.setUnavailable(60)
       await operator.submit(id, 'T1')
       expect((await conn.db.select().from(shipment).where(eq(shipment.id, id)))[0]!.uid).toBeNull()
       expect(pending).toEqual([['operator.submit', id, 'T1']])
-      clock = new Date(clock.getTime() + 61_000)
+      expect(delays).toEqual([61])
       // Модель оператора: в ответ на Т1 — номер накладной (в работе это делает очередь по submitTitle)
       await drain()
       const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
@@ -873,7 +876,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
     it('оператор отклонил Т2, потом ошибка ГИС: перевозчик видит причину и подписывает заново', async () => {
       const state = async () => (await conn.db.select().from(shipment).where(eq(shipment.id, id)))[0]!.state
-      await operator.setFaults({ rejectT2: { code: 'E-T2-17', message: 'не заполнен вес брутто' }, gisError: { code: 'GIS-503', message: 'сервис временно недоступен' } })
+      await epd.setFaults({ rejectT2: { code: 'E-T2-17', message: 'не заполнен вес брутто' }, gisError: { code: 'GIS-503', message: 'сервис временно недоступен' } })
 
       await operator.submit(id, 'T2')
       await drain()
@@ -889,23 +892,24 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/ГИС ЭПД не зарегистрировала накладную \(модель\): сервис временно недоступен, код GIS-503/)
 
       // Сбои одноразовые: третья подпись проходит
-      expect(await operator.faults()).toMatchObject({ rejectT2: null, gisError: null })
+      expect(await epd.faults()).toMatchObject({ rejectT2: null, gisError: null })
       await act(press(3, `sgd:T2:${id}`))
       expect(await state()).toBe('registering')
     })
 
     it('Т2 у оператора: регистрация в ГИС ЭПД → «в пути», водителю «ваш ход» и анимированный QR после задержки', async () => {
       const before = out.inbox.get(801)!.length
-      await operator.setFaults({ qrDelayS: 30 })
+      await epd.setFaults({ qrDelayS: 30 })
       await operator.submit(id, 'T2')
-      await operator.submit(id, 'T2') // повтор из очереди — без второй регистрации
-      expect(pending).toEqual([['operator.register', id, undefined]])
+      await operator.submit(id, 'T2') // повтор из очереди — титул у оператора один, регистрация одна
+      expect(pending.map(([task]) => task)).toEqual(['operator.poll', 'operator.poll'])
       await drain()
       const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
       expect(s!.state).toBe('in_transit')
 
-      // QR — последствие sendQrToDriver; с ручкой задержки приходит отложенным шагом
-      await operator.qrRequested(id)
+      // QR — последствие sendQrToDriver; с ручкой задержки оператор отвечает «не готов», повтор отложенным шагом
+      await operator.deliverQr(id)
+      expect(pending).toEqual([['operator.qr', id, undefined]])
       expect(out.inbox.get(801)!.slice(before).some((m) => m.file)).toBe(false)
       await drain()
       const toDriver = out.inbox.get(801)!.slice(before)
@@ -916,7 +920,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(gif.subarray(0, 6).toString()).toBe('GIF89a')
       expect(gif.includes('NETSCAPE2.0')).toBe(true) // зацикленная анимация
       expect(qr.text).toMatch(/Модель ГИС ЭПД/)
-      await operator.setFaults({ qrDelayS: 0 })
+      await epd.setFaults({ qrDelayS: 0 })
     })
 
     it('до закрытия: выгрузка → получатель по ссылке → приёмка частично → Т3 и Т4 по схемам → «закрыта»', async () => {

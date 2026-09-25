@@ -10,7 +10,8 @@ import { InviteService } from './core/invite-service.ts'
 import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
-import { MockOperator } from './core/mock-operator.ts'
+import { MockEpd } from './adapters/mock-epd.ts'
+import { OperatorLink } from './core/operator-link.ts'
 import { FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
 import { GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR } from './paths.ts'
 import { openDb, readSeed } from './db/boot.ts'
@@ -85,16 +86,17 @@ if (env.DATABASE_URL) {
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
 
     jobs.onEffect('inviteConsignee', (id) => bot.consigneeArrival(id))
-    // Модель оператора ЭПД (HAKATON-39): номер накладной после Т1, регистрация в ГИС ЭПД после Т2, QR водителю.
-    // Ответы — отложенными шагами очереди, сбои — ручками в mock.epd_settings
-    const operator = new MockOperator(db, shipments, titles, {
+    // Оператор ЭПД (HAKATON-39): на хакатоне модель MockEpd, ядро говорит с ним через EpdOperator.
+    // Номер накладной после Т1, регистрация в ГИС ЭПД после Т2, QR водителю — отложенными шагами очереди,
+    // сбои — ручками в mock.epd_settings
+    const operator = new OperatorLink(db, new MockEpd(db), shipments, titles, {
       onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
       later: (task, shipmentId, delayS, arg) => jobs.later({ task, shipmentId, arg }, delayS),
       sendQr: (shipmentId, file) => bot.sendQrToDriver(shipmentId, file),
     })
-    for (const task of ['operator.register', 'operator.qr', 'operator.submit'] as const) jobs.onLater(task, (j) => operator.run(task, j.shipmentId, j.arg))
+    for (const task of ['operator.submit', 'operator.poll', 'operator.qr', 'operator.register'] as const) jobs.onLater(task, (j) => operator.run(task, j.shipmentId, j.arg))
     jobs.onEffect('submitTitle', (id, e) => (e.kind === 'submitTitle' ? operator.submit(id, e.title) : Promise.resolve()))
-    jobs.onEffect('sendQrToDriver', (id) => operator.qrRequested(id))
+    jobs.onEffect('sendQrToDriver', (id) => operator.deliverQr(id))
 
     // Все обновления — через inbox: повторы MAX отсекаются, упавшие повторяются раз в минуту
     const inbox = new Inbox(db, (u) => bot.handle(u), app.log)

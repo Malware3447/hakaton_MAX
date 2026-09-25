@@ -65,18 +65,34 @@ export interface TitleFile {
 }
 
 export type OperatorStatus =
-  | { kind: 'sent' }
+  /** принят, ждёт регистрации; uid — номер накладной, оператор выдаёт его после Т1 (он нужен уже в Т2) */
+  | { kind: 'sent'; uid: string | null }
   | { kind: 'registered'; uid: string }
-  | { kind: 'rejected'; code: string; message: string }
+  /** by — кто отказал: оператор (титул не принят) или ГИС ЭПД (не зарегистрировала) */
+  | { kind: 'rejected'; by: 'operator' | 'gis'; code: string; message: string }
+
+/** Оператор временно не отвечает или ответа ещё нет (QR не готов): повторить через retryInS секунд. */
+export class OperatorBusy extends Error {
+  constructor(
+    message: string,
+    readonly retryInS: number,
+  ) {
+    super(message)
+  }
+}
 
 /**
- * Реализации: MockEpd (mock.epd_*, отвечает с задержкой через задание); на пилоте — Диадок, Такском.
+ * Реализации: MockEpd (mock.epd_*, модель); на пилоте — Диадок, Такском.
  * operatorDocId один на накладную: submit первого титула его создаёт, остальные дописываются.
+ * Повтор уже принятого титула — без последствий. Временная недоступность — OperatorBusy,
+ * любая другая ошибка submit — титул не принят (нарушен порядок или сцепка).
  */
 export interface EpdOperator {
+  /** модель, а не настоящий оператор: в сообщениях людям пишем «(модель)» */
+  readonly isModel: boolean
   submit(operatorDocId: string | null, title: TitleFile, signatures: Uint8Array[]): Promise<{ operatorDocId: string }>
   status(operatorDocId: string): Promise<OperatorStatus>
-  /** анимированный GIF QR-кода; есть после регистрации */
+  /** анимированный GIF QR-кода; есть после регистрации, до того — OperatorBusy */
   qr(operatorDocId: string): Promise<Uint8Array>
 }
 
