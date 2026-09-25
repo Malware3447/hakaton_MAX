@@ -80,7 +80,9 @@ function actionRows(cmd: CommandType, id: string): Button[][] {
         [cb('Принято частично', `pep:accept_partial:${id}`), cb('Отказ от груза', `pep:accept_refused:${id}`)],
       ]
     case 'shipper.signT1':
+      return [[cb('Подписать накладную', `sg:T1:${id}`)]]
     case 'carrier.signT2':
+      return [[cb('Подписать накладную', `sg:T2:${id}`)]]
     case 'consignee.signT3':
     case 'carrier.signT4':
       return [[cb('Подписать накладную', P.stub(cmd))]]

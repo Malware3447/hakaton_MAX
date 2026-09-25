@@ -9,6 +9,9 @@ import type { ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 import { TripFlows } from './trip-flows.ts'
+import { SignFlows, fileAttachments } from './sign-flows.ts'
+import type { TitleService } from '../core/titles.ts'
+import type { SignatureService, SignatureVerifier } from '../core/signatures.ts'
 import type { Outbox } from './outbox.ts'
 import type { CardStore } from './card-store.ts'
 import type { FleetService } from '../core/fleet.ts'
@@ -58,6 +61,7 @@ function parseRuDate(s: string): Date | null {
 export class Bot {
   private readonly flows: ShipmentFlows
   private readonly trips: TripFlows
+  private readonly sign: SignFlows
 
   constructor(
     private readonly store: BotStore,
@@ -68,6 +72,7 @@ export class Bot {
     fleet: FleetService,
     outbox: Outbox,
     cards: CardStore,
+    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null },
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -92,6 +97,9 @@ export class Bot {
       startForm: (p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }) => this.startForm(p, role, to, opts),
     }
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
+    this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
+    // После «Поделиться номером» подпись продолжается сама
+    this.trips.onPhone('sign', (p, pending, to) => this.sign.start(p, pending.title as 'T1' | 'T2', String(pending.shipmentId), to))
   }
 
   /** Последствие inviteConsignee из очереди: позвать получателя, когда машина выехала. */
@@ -116,6 +124,12 @@ export class Bot {
       if (!m.sender || m.sender.is_bot || m.recipient.chat_type !== 'dialog') return
       const p = await this.store.upsertPerson(m.sender.user_id, fullName(m.sender))
       const reply: Reply = { kind: 'message', userId: m.sender.user_id }
+      const files = fileAttachments(m)
+      if (files.length) {
+        const d = await this.store.getDialog(p.id)
+        if (d && (await this.sign.onFiles(p, d, files, reply))) return
+        return this.reply(reply, { text: 'Файл получил, но сейчас его некуда приложить. Если это подпись — сначала нажмите «Подписать накладную» в карточке.', buttons: [[cb('Меню ролей', P.root)]] })
+      }
       const contact = m.body.attachments?.find((a) => a.type === 'contact')
       if (contact) {
         const d = await this.store.getDialog(p.id)
@@ -199,6 +213,7 @@ export class Bot {
     if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
     if (await this.trips.onButton(p, payload, to)) return
+    if (await this.sign.onButton(p, payload, to)) return
     if (payload === P.root) return this.showRoot(p, to)
     if (payload === P.help) return this.reply(to, helpScreen)
     if (payload === P.company) {

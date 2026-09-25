@@ -359,7 +359,16 @@ export class TripFlows {
     return this.continuePep(p, pending, p.phoneSha256, p.maxUserId, to)
   }
 
+  private readonly resumers = new Map<string, (p: PersonRow, pending: Ctx, to: Reply) => Promise<unknown>>()
+
+  /** Что продолжить после «Поделиться номером», если его просил другой сценарий (подпись титула). */
+  onPhone(kind: string, fn: (p: PersonRow, pending: Ctx, to: Reply) => Promise<unknown>) {
+    this.resumers.set(kind, fn)
+  }
+
   private async continuePep(p: PersonRow, pending: Ctx, phoneSha256: string, maxUserId: number, to: Reply) {
+    const resume = this.resumers.get(String(pending.kind))
+    if (resume) return resume(p, pending, to)
     const evidence: PepEvidence = {
       maxUserId,
       phoneSha256,
@@ -392,7 +401,7 @@ export class TripFlows {
   }
 
   /** Перед первой подписью — номер телефона кнопкой request_contact, один раз на человека. */
-  private async askPhone(p: PersonRow, pending: Ctx, to: Reply) {
+  async askPhone(p: PersonRow, pending: Ctx, to: Reply) {
     await this.store.setDialog(p.id, { step: 'await:phone', context: { pending } })
     await this.ui.reply(to, {
       text: [
@@ -423,7 +432,7 @@ export class TripFlows {
     await this.store.savePhone(p.id, phone, phoneSha256)
     await this.store.clearDialog(p.id)
     await this.ui.reply(to, { text: '✅ Номер подтверждён.' })
-    await this.continuePep(p, d.context.pending as Ctx, phoneSha256, p.maxUserId, to)
+    await this.continuePep({ ...p, phone, phoneSha256 }, d.context.pending as Ctx, phoneSha256, p.maxUserId, to)
   }
 
   // ---------- экраны ----------

@@ -8,6 +8,8 @@ import { CardStore } from './bot/card-store.ts'
 import { FleetService } from './core/fleet.ts'
 import { InviteService } from './core/invite-service.ts'
 import { ShipmentService } from './core/shipments.ts'
+import { TitleService } from './core/titles.ts'
+import { SignatureService } from './core/signatures.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -57,6 +59,8 @@ if (env.DATABASE_URL) {
       new FleetService(db),
       jobs,
       cards,
+      // Проверка подписи «Госключа» — модуль Егора (HAKATON-41); до слияния — только демо-подпись
+      { titles: new TitleService(db), signatures: new SignatureService(db), verifier: null },
       env.MAX_BOT_TOKEN,
       me.username,
       app.log,

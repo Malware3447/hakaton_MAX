@@ -2,7 +2,7 @@ import type { Messenger, OutMessage } from '@nk/domain'
 import { createHmac } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MockDirectory } from '../adapters/mock-directory.ts'
 import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
@@ -14,6 +14,10 @@ import { ShipmentService } from '../core/shipments.ts'
 import { InviteService } from '../core/invite-service.ts'
 import { FleetService } from '../core/fleet.ts'
 import { CardStore } from './card-store.ts'
+import { TitleService } from '../core/titles.ts'
+import { SignatureService, type SignatureVerification } from '../core/signatures.ts'
+import { decode1251 } from '@nk/etrn'
+import { validateTitle } from '../../../../packages/etrn/src/testing/xsd.ts'
 import { Bot } from './bot.ts'
 import { BotStore } from './store.ts'
 
@@ -101,6 +105,21 @@ async function openRef(act: (u: MaxUpdate) => Promise<void>, out: { last: OutMes
   }
   throw new Error(`отгрузки ${ref} нет в списке`)
 }
+/** Сообщение с файлом: своим или пересланным (ответ «Госключа» пересылают). */
+const fileMsg = (id: number, filename: string, url: string, forwarded = false): MaxUpdate => {
+  const att = [{ type: 'file', filename, payload: { url, token: 't' } }]
+  return {
+    update_type: 'message_created',
+    timestamp: 0,
+    message: {
+      sender: user(id),
+      recipient: { chat_type: 'dialog', user_id: 1 },
+      timestamp: 0,
+      body: { mid: `f-${filename}`, seq: 0, attachments: forwarded ? [] : att },
+      link: forwarded ? { type: 'forward', message: { attachments: att } } : null,
+    },
+  }
+}
 const payloadOf = (m: OutMessage | null, text: string) => (m?.buttons ?? []).flat().find((b) => b.text.startsWith(text))?.payload ?? ''
 const actorOf = (u: MaxUpdate) =>
   'callback' in u ? u.callback.user.user_id : 'message' in u ? u.message.sender!.user_id : 'user' in u ? u.user.user_id : 0
@@ -111,6 +130,15 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
   let bot: Bot
   let svc: ShipmentService
   const out = new FakeMessenger()
+  /** проверка подписи «Госключа»: что вернуть и с чем её вызывали */
+  const verifier = {
+    next: null as SignatureVerification | null,
+    calls: [] as { document: Uint8Array; sig: Uint8Array; expectedInn: string }[],
+    async verify(i: { document: Uint8Array; sig: Uint8Array; expectedInn: string }) {
+      this.calls.push(i)
+      return this.next!
+    },
+  }
   const act = (u: MaxUpdate) => {
     out.current = actorOf(u)
     return bot.handle(u)
@@ -130,7 +158,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
         },
       },
     ])
-    bot = new Bot(new BotStore(conn.db), out, directory, (svc = new ShipmentService(conn.db, new MockErp(conn.db), directory)), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, (svc = new ShipmentService(conn.db, new MockErp(conn.db), directory)), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles: new TitleService(conn.db), signatures: new SignatureService(conn.db), verifier }, 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
 
@@ -731,6 +759,81 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Водитель на рейс/)
       const [car] = await conn.db.select().from(vehicle).where(eq(vehicle.plate, 'О777ОО116'))
       expect(car).toMatchObject({ bodyType: 'Бортовой', capacityT: 8, volumeM3: 36, ownership: 'own' })
+    })
+  })
+
+  describe('подпись накладной', () => {
+    const shipmentOf = async (ref: string) => (await conn.db.select().from(shipment).where(eq(shipment.erpRef, ref)))[0]!.id
+    let id = ''
+
+    it('ОТГ-1057 доходит до «груз у водителя»: водитель по приглашению, номер, погрузка', async () => {
+      await act(press(3, 'tl:carrier'))
+      await act(press(3, payloadOf(out.last, 'ОТГ-2026-1057')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'Hino 500')))
+      await act(contact(3, { user_id: 801, first_name: 'Андрей' }))
+      await act(started(801, `inv_${tokenIn(out.last)}`))
+      await act(press(801, payloadOf(out.last, 'Принять рейс')))
+      await act(press(801, payloadOf(out.last, 'Я на погрузке')))
+      await act(pressIn(801, payloadOf(out.last, 'Всё верно')))
+      await act(ownPhone(801, '79170008010'))
+      expect(out.last?.text).toMatch(/груз у водителя, нужна подпись отправителя/)
+      id = await shipmentOf('ОТГ-2026-1057')
+    })
+
+    it('отправитель: номер один раз → бот присылает XML Т1, он проходит схему ФНС', async () => {
+      await act(pressIn(1, `sg:T1:${id}`))
+      expect(out.last?.text).toMatch(/записывается в транспортную накладную/)
+      await act(ownPhone(1, '79172000001'))
+      const fileMsgOut = out.sentLog.filter((s) => s.userId === 1 && s.m.file).at(-1)!
+      expect(fileMsgOut.m.file!.name).toMatch(/^ON_TRNACLGROT_2DM-DEMO-OPER_2DM-9782242514_\d{8}_[0-9a-f-]{36}\.xml$/)
+      const xml = fileMsgOut.m.file!.bytes
+      expect((await validateTitle('T1', xml)).errors).toEqual([])
+      expect(decode1251(xml)).toMatch(/РегНомер="О777ОО116"[\s\S]*Тип="Грузовой бортовой" Марка="Hino 500" Грузопод="8.00" Вместим="36.00"/)
+      expect(out.last?.text).toMatch(/Подпишите накладную ОТГ-2026-1057[\s\S]*«Госключ»/)
+      expect(buttons(out.last)).toEqual(['Открыть «Госключ» в MAX', 'Демо-подпись (модель)', 'Отмена'])
+    })
+
+    it('прислали наш же XML — просим файл подписи', async () => {
+      await act(fileMsg(1, 'накладная.xml', 'https://files.test/xml'))
+      expect(out.last?.text).toMatch(/нужен файл подписи из «Госключа»/)
+    })
+
+    it('подпись не прошла проверку — человек видит причины', async () => {
+      vi.stubGlobal('fetch', async () => new Response(new Uint8Array([1, 2, 3])))
+      verifier.next = { ok: false, level: 'unep', signer: null, checks: [{ name: 'inn', ok: false, message: 'ИНН в подписи не совпадает с ИНН отправителя' }] }
+      await act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig', true))
+      expect(out.last?.text).toMatch(/Подпись не прошла проверку[\s\S]*ИНН в подписи не совпадает/)
+      const call = verifier.calls.at(-1)!
+      expect(call.expectedInn).toBe('9782242514')
+      const t1 = out.sentLog.filter((s) => s.userId === 1 && s.m.file).at(-1)!.m.file!.bytes
+      expect(Buffer.from(call.document).equals(Buffer.from(t1))).toBe(true)
+    })
+
+    it('подпись прошла — Т1 подписан, ход перевозчика', async () => {
+      verifier.next = {
+        ok: true,
+        level: 'unep',
+        signer: { fullName: 'Соколова Марина', inn: '9782242514', snils: '000-000-000 00', certificate: 'MII' },
+        checks: [{ name: 'signature', ok: true, message: '' }],
+      }
+      await act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig', true))
+      vi.unstubAllGlobals()
+      expect(out.last?.text).toMatch(/нужна подпись перевозчика/)
+      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
+    })
+
+    it('перевозчик: без номера накладной от оператора Т2 не собрать; с номером — XML Т2 по схеме, демо-подпись', async () => {
+      await act(press(3, `sg:T2:${id}`))
+      expect(out.last?.text).toMatch(/оператор ещё не выдал номер накладной/)
+      await conn.db.update(shipment).set({ uid: 'a5b0c7e2-3f4d-4e21-9c8b-1d2e3f4a5b6c' }).where(eq(shipment.id, id))
+      await act(press(3, `sg:T2:${id}`))
+      const t2 = out.sentLog.filter((s) => s.userId === 3 && s.m.file).at(-1)!.m.file!
+      expect((await validateTitle('T2', t2.bytes)).errors).toEqual([])
+      // В Т2 — подпись Т1 целиком (тот .sig, что прислал отправитель)
+      expect(decode1251(t2.bytes)).toContain(`ЭП="${Buffer.from([1, 2, 3]).toString('base64')}"`)
+      await act(press(3, `sgd:T2:${id}`))
+      expect(out.last?.text).toMatch(/регистрируется в ГИС ЭПД/)
     })
   })
 })
