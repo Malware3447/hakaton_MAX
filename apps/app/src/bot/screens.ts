@@ -106,7 +106,7 @@ export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
           [cb(`Ждут меня${n(extra.waiting)}`, S.waiting('carrier'))],
           [cb(`Новые заявки${n(extra.offers)}`, S.offers)],
           [cb('Мои рейсы', S.trips('carrier'))],
-          stub('Машины и водители', 'carrier.fleet'),
+          [cb('Машины и водители', 'fleet')],
           [cb('Компания', P.company)],
           switchRole,
         ],
@@ -120,7 +120,7 @@ export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
             ? 'Рейсов пока нет.'
             : 'Чтобы получить рейс, попросите диспетчера перевозчика назначить вас: он перешлёт боту ваш контакт.',
         ].join('\n'),
-        buttons: [stub('Открыть рейс', 'driver.trip'), stub('QR-код', 'driver.qr'), stub('Мои рейсы', 'driver.trips'), switchRole],
+        buttons: [[cb('Открыть рейс', 'trip')], stub('QR-код', 'driver.qr'), [cb('Мои рейсы', 'trips')], switchRole],
       }
     case 'consignee':
       return {

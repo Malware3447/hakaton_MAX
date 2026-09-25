@@ -1,4 +1,5 @@
 import type { Messenger, OutMessage } from '@nk/domain'
+import { createHmac } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -10,6 +11,7 @@ import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
 import { InviteService } from '../core/invite-service.ts'
+import { FleetService } from '../core/fleet.ts'
 import { Bot } from './bot.ts'
 import { BotStore } from './store.ts'
 
@@ -58,6 +60,27 @@ const contact = (id: number, of: { user_id: number; first_name: string } | null)
     body: { mid: 'x', seq: 0, attachments: [{ type: 'contact', payload: { vcf_info: 'BEGIN:VCARD\nFN:Кто-то\nTEL:+79170001122\nEND:VCARD', max_info: of ? { ...of, is_bot: false } : null } }] },
   },
 })
+/** Свой номер из кнопки «Поделиться номером»: hash = HMAC-SHA256(токен, vcf_info). */
+const ownPhone = (id: number, phone: string, token = 'test-token'): MaxUpdate => {
+  const vcf = `BEGIN:VCARD\r\nVERSION:3.0\r\nTEL;TYPE=cell:${phone}\r\nFN:Человек ${id}\r\nEND:VCARD\r\n`
+  const hash = createHmac('sha256', token).update(vcf).digest('hex')
+  return {
+    update_type: 'message_created',
+    timestamp: 0,
+    message: {
+      sender: user(id),
+      recipient: { chat_type: 'dialog', user_id: 1 },
+      timestamp: 0,
+      body: { mid: 'x', seq: 0, attachments: [{ type: 'contact', payload: { vcf_info: vcf, hash, max_info: { ...user(id) } } }] },
+    },
+  }
+}
+const pressIn = (id: number, payload: string, mid = 'card-mid'): MaxUpdate => ({
+  update_type: 'message_callback',
+  timestamp: 0,
+  callback: { timestamp: 0, callback_id: `cb-${payload}`, payload, user: user(id) },
+  message: { recipient: { chat_type: 'dialog' }, timestamp: 0, body: { mid, seq: 0 } },
+})
 const started = (id: number, payload: string): MaxUpdate => ({ update_type: 'bot_started', timestamp: 0, chat_id: 1, user: user(id), payload })
 const tokenIn = (m: OutMessage | null) => /start=inv_([\w-]+)/.exec(m?.text ?? '')?.[1] ?? ''
 /** Открыть отгрузку по номеру, пролистав список отправителя. */
@@ -87,7 +110,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     conn = await openDb(url!)
     await resetDemo(conn.db, await readSeed())
     const directory = new MockDirectory(conn.db)
-    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
 
@@ -287,6 +310,88 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(fresh).not.toBe(old)
       await act(started(888, `inv_${fresh}`))
       expect(out.last?.text).toMatch(/Вам предлагают перевезти груз/)
+    })
+  })
+
+  describe('рейс: машина, водитель, погрузка', () => {
+    const openCarrierTrip = async (ref: string) => {
+      await act(press(3, 'open:carrier'))
+      await act(press(3, 'tl:carrier'))
+      await act(press(3, payloadOf(out.last, ref)))
+    }
+
+    it('перевозчик вводит новую машину и назначает водителя контактом', async () => {
+      await act(press(4, 'add:driver'))
+      await openCarrierTrip('ОТГ-2026-1040')
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      expect(out.last?.text).toMatch(/Машин пока нет/)
+      await act(press(3, 'nvh'))
+      await act(text(3, 'КАМАЗ'))
+      expect(out.last?.text).toMatch(/Не похоже на госномер/)
+      await act(text(3, 'a245km116'))
+      await act(text(3, 'КАМАЗ 65115'))
+      await act(press(3, 'own:own'))
+      expect(out.last?.text).toMatch(/Водитель на рейс/)
+      await act(contact(3, { user_id: 4, first_name: 'Иван' }))
+      expect(out.last?.text).toMatch(/Машина и водитель назначены[\s\S]*КАМАЗ 65115 А245КМ116, водитель: Человек 4/)
+      const trip = out.inbox.get(4)!.at(-1)!
+      expect(trip.text).toMatch(/Вам назначен рейс/)
+      expect(buttons(trip)).toEqual(['Принять рейс', 'Отказаться от рейса', 'Обновить', 'В меню'])
+    })
+
+    it('водитель: принять рейс → на погрузке → всё верно → номер один раз → ход отправителя', async () => {
+      await act(press(4, 'trip'))
+      await act(press(4, payloadOf(out.last, 'Принять рейс')))
+      await act(press(4, payloadOf(out.last, 'Я на погрузке')))
+      await act(pressIn(4, payloadOf(out.last, 'Всё верно')))
+      expect(out.last?.text).toMatch(/Подтвердите номер телефона/)
+      expect((out.last?.buttons ?? []).flat()[0]).toMatchObject({ kind: 'request_contact' })
+
+      await act(ownPhone(4, '79170001122', 'wrong-token'))
+      expect(out.last?.text).toMatch(/Не получилось подтвердить номер/)
+      await act(ownPhone(4, '79170001122'))
+      expect(out.last?.text).toMatch(/груз у водителя, нужна подпись отправителя/)
+      const shipperNote = out.inbox.get(1)!.at(-1)!
+      expect(shipperNote.text).toMatch(/водитель принял груз без замечаний/)
+      expect(buttons(shipperNote)).toContain('Подписать накладную')
+    })
+
+    it('машина уже в другом рейсе — назначить нельзя', async () => {
+      await openCarrierTrip('ОТГ-2026-1045')
+      await act(press(3, payloadOf(out.last, 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'КАМАЗ 65115')))
+      await act(press(3, payloadOf(out.last, 'Человек 4')))
+      expect(out.last?.text).toMatch(/Эта машина уже в другой перевозке/)
+    })
+
+    it('незнакомому водителю — приглашение; по ссылке он сразу в рейсе, замечания уходят отправителю', async () => {
+      await openCarrierTrip('ОТГ-2026-1045')
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, 'nvh'))
+      await act(text(3, 'В123ОР116'))
+      await act(text(3, 'МАЗ 5440'))
+      await act(press(3, 'own:lease'))
+      await act(text(3, 'ООО «Лизинг-Центр»'))
+      await act(contact(3, { user_id: 600, first_name: 'Пётр' }))
+      expect(out.last?.text).toMatch(/Пётр ещё не пользуется ботом[\s\S]*start=inv_/)
+      const link = tokenIn(out.last)
+
+      await act(started(600, `inv_${link}`))
+      expect(out.last?.text).toMatch(/Вы в перевозке как водитель[\s\S]*ждём, что водитель примет рейс/)
+      await act(press(600, payloadOf(out.last, 'Принять рейс')))
+      await act(press(600, payloadOf(out.last, 'Я на погрузке')))
+      await act(pressIn(600, payloadOf(out.last, 'Есть замечания')))
+      await act(ownPhone(600, '+7 917 555-66-77'))
+      expect(out.last?.text).toMatch(/Замечания к грузу/)
+      await act(text(600, 'Недостача 2 канистры'))
+      expect(out.last?.text).toMatch(/Замечания при погрузке: Недостача 2 канистры/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/с замечаниями: Недостача 2 канистры/)
+    })
+
+    it('в «Машины и водители» — обе машины и оба водителя', async () => {
+      await act(press(3, 'fleet'))
+      expect(out.last?.text).toMatch(/КАМАЗ 65115 А245КМ116, собственная[\s\S]*МАЗ 5440 В123ОР116, лизинг, владелец ООО «Лизинг-Центр»[\s\S]*Человек 4[\s\S]*Человек 600/)
     })
   })
 })

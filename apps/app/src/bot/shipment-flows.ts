@@ -4,6 +4,7 @@ import type { ExecResult, ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
 import { inviteLink, sha256 } from '../core/invites.ts'
 import { esc } from '../max/messenger.ts'
+import { phoneFromVcf } from '../max/contact.ts'
 import type { MaxAttachment } from '../max/types.ts'
 import { S, cb } from './screens.ts'
 import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
@@ -12,7 +13,8 @@ import type { BotStore, DialogState, PersonRow } from './store.ts'
 
 // Действия с перевозками в чате: HAKATON-24 (ядро), HAKATON-29 (шаги), HAKATON-44 (назначение по контакту).
 
-export type Reply = { kind: 'callback'; callbackId: string } | { kind: 'message'; userId: number }
+/** Куда отвечать. У нажатия — его callback_id и mid сообщения с кнопкой: это доказательства простой подписи. */
+export type Reply = { kind: 'callback'; callbackId: string; mid: string | null; userId: number } | { kind: 'message'; userId: number }
 
 export interface Ui {
   reply(to: Reply, msg: OutMessage, notification?: string | null): Promise<void>
@@ -24,7 +26,10 @@ export interface Ui {
 /** Команды без данных — выполняются прямо с кнопки. */
 const ONE_TAP: CommandType[] = ['carrier.accept', 'driver.acceptTrip', 'driver.arrivedLoading', 'driver.arrivedUnloading']
 
-const DECLINE_REASONS = ['Нет свободных машин', 'Не наш маршрут', 'Не устраивают сроки']
+const DECLINE_REASONS: Record<'carrier.decline' | 'driver.declineTrip', string[]> = {
+  'carrier.decline': ['Нет свободных машин', 'Не наш маршрут', 'Не устраивают сроки'],
+  'driver.declineTrip': ['Машина неисправна', 'Не успеваю к погрузке', 'Заболел'],
+}
 
 const FAIL_TEXT: Record<string, string> = {
   already_done: 'Уже сделано',
@@ -35,14 +40,6 @@ const FAIL_TEXT: Record<string, string> = {
 }
 
 const byOf = (cmd: CommandType) => TRANSITIONS.find((t) => t.command === cmd)!.by as Role
-
-function phoneFromVcf(vcf: string | null | undefined): string | null {
-  const raw = /(?:^|\n)TEL[^:]*:([^\r\n]+)/.exec(vcf ?? '')?.[1]
-  if (!raw) return null
-  const d = raw.replace(/\D/g, '')
-  const norm = d.length === 11 && (d.startsWith('7') || d.startsWith('8')) ? `+7${d.slice(1)}` : d.length === 10 ? `+7${d}` : `+${d}`
-  return norm
-}
 
 export class ShipmentFlows {
   constructor(
@@ -97,15 +94,22 @@ export class ShipmentFlows {
         })
         return true
       case 'dc':
-        await this.store.setDialog(p.id, { step: 'await:decline_reason', context: { shipmentId: arg } })
+      case 'dt': {
+        const cmd = kind === 'dc' ? 'carrier.decline' : 'driver.declineTrip'
+        await this.store.setDialog(p.id, { step: 'await:decline_reason', context: { shipmentId: arg, cmd } })
         await this.ui.reply(to, {
-          text: '<b>Отклонить заявку</b>\n\nВыберите причину или напишите свою — отправитель её увидит.',
-          buttons: [...DECLINE_REASONS.map((r, i) => [cb(r, `dq:${i}`)]), [cb('Отмена', S.view(arg))]],
+          text:
+            cmd === 'carrier.decline'
+              ? '<b>Отклонить заявку</b>\n\nВыберите причину или напишите свою — отправитель её увидит.'
+              : '<b>Отказаться от рейса</b>\n\nВыберите причину или напишите свою — перевозчик её увидит и назначит другого водителя.',
+          buttons: [...DECLINE_REASONS[cmd].map((r, i) => [cb(r, `dq:${i}`)]), [cb('Отмена', S.view(arg))]],
         })
         return true
+      }
       case 'dq': {
         const d = await this.store.getDialog(p.id)
-        const reason = DECLINE_REASONS[Number(arg)]
+        const cmd = d?.context.cmd as keyof typeof DECLINE_REASONS | undefined
+        const reason = cmd ? DECLINE_REASONS[cmd][Number(arg)] : undefined
         if (d?.step !== 'await:decline_reason' || !reason) return false
         await this.decline(p, d, reason, to)
         return true
@@ -328,7 +332,7 @@ export class ShipmentFlows {
 
   // ---------- выполнение ----------
 
-  private async run(p: PersonRow, cmd: Command, to: Reply) {
+  async run(p: PersonRow, cmd: Command, to: Reply) {
     const res = await this.shipments.execute(cmd, { kind: 'person', personId: p.id, role: byOf(cmd.type) })
     if (!res.ok) return this.failed(res, to)
     await this.showCard(p, cmd.shipmentId, to)
@@ -337,28 +341,28 @@ export class ShipmentFlows {
 
   private async decline(p: PersonRow, d: DialogState, reason: string, to: Reply) {
     const shipmentId = String(d.context.shipmentId)
-    const res = await this.shipments.execute(
-      { type: 'carrier.decline', shipmentId, payload: { reason } },
-      { kind: 'person', personId: p.id, role: 'carrier' },
-    )
+    const cmd = (d.context.cmd as 'carrier.decline' | 'driver.declineTrip' | undefined) ?? 'carrier.decline'
+    const role: Role = cmd === 'carrier.decline' ? 'carrier' : 'driver'
+    const res = await this.shipments.execute({ type: cmd, shipmentId, payload: { reason } }, { kind: 'person', personId: p.id, role })
     await this.store.clearDialog(p.id)
     if (!res.ok) return this.failed(res, to)
-    // Перевозчик больше не участник — карточку ему не показываем
-    await this.ui.reply(to, { text: 'Заявка отклонена, отправитель получит причину.', buttons: [[cb('В меню', `open:carrier`)]] })
+    // Отказавшийся больше не участник — карточку ему не показываем
+    const text = role === 'carrier' ? 'Заявка отклонена, отправитель получит причину.' : 'Вы отказались от рейса, перевозчик получит причину.'
+    await this.ui.reply(to, { text, buttons: [[cb('В меню', `open:${role}`)]] })
     await this.afterTransition(res, p.id, reason)
   }
 
-  private async failed(res: Extract<ExecResult, { ok: false }>, to: Reply) {
+  async failed(res: Extract<ExecResult, { ok: false }>, to: Reply) {
     await this.ui.notify(to, FAIL_TEXT[res.code] ?? res.message)
   }
 
   /** «Ваш ход» тому, чья очередь теперь; живые карточки остальным — HAKATON-28. */
-  private async afterTransition(res: Extract<ExecResult, { ok: true }>, actorPersonId: string, reason?: string) {
+  async afterTransition(res: Extract<ExecResult, { ok: true }>, actorPersonId: string, reason?: string) {
     const send = (userId: number, msg: OutMessage) =>
       this.messenger.send(userId, msg).catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
 
     // Отправителю — короткое «принято»: ход остаётся у перевозчика, а живых карточек пока нет
-    if (res.to === 'carrier_accepted') {
+    if (res.to === 'carrier_accepted' && res.from === 'offered') {
       const shipper = await this.shipments.participantOf(res.shipmentId, 'shipper')
       const view = await this.shipments.view(res.shipmentId, 'shipper')
       if (shipper && view && shipper.personId !== actorPersonId)
@@ -375,7 +379,13 @@ export class ShipmentFlows {
         ? `📦 <b>Новая заявка</b> от ${esc(view.shipper.name)}`
         : res.to === 'draft' && reason
           ? `⚠️ Перевозчик отклонил заявку: ${esc(reason)}`
-          : '🔔 <b>Сейчас ваш ход</b>'
+          : res.to === 'carrier_accepted' && reason
+            ? `⚠️ Водитель отказался от рейса: ${esc(reason)}. Назначьте другого.`
+            : res.to === 'assigned'
+              ? `🚚 <b>Вам назначен рейс</b> от ${esc(view.carrier?.name ?? 'перевозчика')}`
+              : res.to === 'loaded'
+                ? `🔔 <b>Сейчас ваш ход:</b> водитель принял груз${view.loadingRemarks ? ` с замечаниями: ${esc(view.loadingRemarks)}` : ' без замечаний'}. Подпишите накладную.`
+                : '🔔 <b>Сейчас ваш ход</b>'
     await send(target.maxUserId, shipmentCard(view, note))
   }
 }

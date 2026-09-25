@@ -58,6 +58,11 @@ export class BotStore {
     }))
   }
 
+  /** Подтверждённый номер: только отпечаток и время согласия. */
+  async savePhone(personId: string, phoneSha256: string) {
+    await this.db.update(person).set({ phoneSha256, consentAt: new Date() }).where(eq(person.id, personId))
+  }
+
   async setActiveRole(personId: string, role: Role | null) {
     await this.db.update(person).set({ activeRole: role }).where(eq(person.id, personId))
   }

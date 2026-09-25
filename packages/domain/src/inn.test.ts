@@ -22,3 +22,16 @@ describe('ИНН', () => {
     expect(normalizeInn('12345')).toBeNull()
   })
 })
+
+describe('госномер', async () => {
+  const { normalizePlate } = await import('./plate.ts')
+  it('номер демо-машины в любом написании', () => {
+    expect(normalizePlate('а245км116')).toBe('А245КМ116')
+    expect(normalizePlate('A 245 KM 116')).toBe('А245КМ116')
+    expect(normalizePlate('А245КМ16')).toBe('А245КМ16')
+  })
+  it('не номер — null', () => {
+    expect(normalizePlate('Б245КМ116')).toBeNull()
+    expect(normalizePlate('КАМАЗ')).toBeNull()
+  })
+})

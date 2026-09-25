@@ -7,6 +7,8 @@ import type { BotStore, DialogState, PersonRow } from './store.ts'
 import type { ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
+import { TripFlows } from './trip-flows.ts'
+import type { FleetService } from '../core/fleet.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
 // Спецификация — docs/roli-i-menyu.md.
@@ -45,6 +47,7 @@ function parseRuDate(s: string): Date | null {
 
 export class Bot {
   private readonly flows: ShipmentFlows
+  private readonly trips: TripFlows
 
   constructor(
     private readonly store: BotStore,
@@ -52,6 +55,8 @@ export class Bot {
     private readonly directory: OrgDirectory,
     shipments: ShipmentService,
     invites: InviteService,
+    fleet: FleetService,
+    botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
   ) {
@@ -68,6 +73,12 @@ export class Bot {
       botUsername,
       log,
     )
+    const ui = {
+      reply: (to: Reply, m: OutMessage, n?: string | null) => this.reply(to, m, n),
+      notify: (to: Reply, text: string) => this.notify(to, text),
+      startForm: (p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }) => this.startForm(p, role, to, opts),
+    }
+    this.trips = new TripFlows(store, shipments, fleet, this.flows, messenger, ui, botToken, botUsername, log)
   }
 
   async handle(u: MaxUpdate): Promise<void> {
@@ -86,7 +97,7 @@ export class Bot {
       const contact = m.body.attachments?.find((a) => a.type === 'contact')
       if (contact) {
         const d = await this.store.getDialog(p.id)
-        if (d && (await this.flows.onContact(p, d, contact, reply))) return
+        if (d && ((await this.flows.onContact(p, d, contact, reply)) || (await this.trips.onContact(p, d, contact, reply)))) return
         return this.onContact(contact, reply)
       }
       return this.onText(p, (m.body.text ?? '').trim(), reply)
@@ -94,7 +105,7 @@ export class Bot {
     if (u.update_type === 'message_callback' && 'callback' in u) {
       const c = u.callback
       const p = await this.store.upsertPerson(c.user.user_id, fullName(c.user))
-      return this.onButton(p, c.payload ?? '', { kind: 'callback', callbackId: c.callback_id })
+      return this.onButton(p, c.payload ?? '', { kind: 'callback', callbackId: c.callback_id, mid: u.message?.body.mid ?? null, userId: c.user.user_id })
     }
   }
 
@@ -146,14 +157,16 @@ export class Bot {
 
     const d = await this.store.getDialog(p.id)
     if (d?.step.startsWith(`${FORM}:`)) return this.formText(p, d, text, to)
-    if (d && (await this.flows.onText(p, d, text, to))) return
+    if (d && ((await this.flows.onText(p, d, text, to)) || (await this.trips.onText(p, d, text, to)))) return
     return this.reply(to, { text: 'Я понимаю кнопки и команды. Откройте меню:', buttons: [[cb('Меню ролей', P.root)]] })
   }
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
     // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
-    if (!payload.startsWith('f:') && !payload.startsWith('dq:')) await this.store.clearDialog(p.id)
+    const inDialog = ['f:', 'dq:', 'avh:', 'nvh', 'own:', 'adr:'].some((x) => payload.startsWith(x))
+    if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
+    if (await this.trips.onButton(p, payload, to)) return
     if (payload === P.root) return this.showRoot(p, to)
     if (payload === P.help) return this.reply(to, helpScreen)
     if (payload === P.company) {

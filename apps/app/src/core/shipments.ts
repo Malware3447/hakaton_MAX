@@ -36,7 +36,7 @@ export type ExecResult =
       /** выданные приглашения: токен показываем один раз, в базе только хеш */
       invites: { role: Role; token: string }[]
     }
-  | { ok: false; code: DecisionErrorCode | 'not_found' | 'not_participant'; message: string }
+  | { ok: false; code: DecisionErrorCode | 'not_found' | 'not_participant' | 'busy'; message: string }
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -135,6 +135,22 @@ export class ShipmentService {
   // ---------- команды ----------
 
   async execute(cmd: Command, actor: Actor): Promise<ExecResult> {
+    try {
+      return await this.executeTx(cmd, actor)
+    } catch (err) {
+      // Частичные уникальные индексы: одна активная перевозка на машину и на водителя
+      const pg = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } }
+      const code = pg.code ?? pg.cause?.code
+      const constraint = pg.constraint ?? pg.cause?.constraint ?? ''
+      if (code === '23505' && constraint.startsWith('shipment_active_')) {
+        const what = constraint.includes('vehicle') ? 'Эта машина' : 'Этот водитель'
+        return { ok: false, code: 'busy', message: `${what} уже в другой перевозке, которая ещё не закрыта` }
+      }
+      throw err
+    }
+  }
+
+  private async executeTx(cmd: Command, actor: Actor): Promise<ExecResult> {
     return this.db.transaction(async (tx) => {
       const [s] = await tx.select().from(shipment).where(eq(shipment.id, cmd.shipmentId)).for('update')
       if (!s) return { ok: false, code: 'not_found', message: 'перевозка не найдена' } as const
