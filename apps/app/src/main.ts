@@ -3,6 +3,7 @@ import { MockErp } from './adapters/mock-erp.ts'
 import { buildApp, type AppDeps } from './app.ts'
 import { Bot } from './bot/bot.ts'
 import { BotStore } from './bot/store.ts'
+import { CardStore } from './bot/card-store.ts'
 import { FleetService } from './core/fleet.ts'
 import { InviteService } from './core/invite-service.ts'
 import { ShipmentService } from './core/shipments.ts'
@@ -33,7 +34,8 @@ if (env.DATABASE_URL) {
     const erp = new MockErp(db)
 
     // Очередь заданий: уведомления участникам и последствия переходов (учётка, оператор, QR)
-    const jobs = new Jobs(Jobs.create(env.DATABASE_URL), db, messenger, erp, app.log)
+    const cards = new CardStore(db)
+    const jobs = new Jobs(Jobs.create(env.DATABASE_URL), db, messenger, erp, cards, app.log)
     const webhook =
       env.MAX_MODE === 'webhook' && env.PUBLIC_URL && env.MAX_WEBHOOK_SECRET
         ? { api, url: new URL('/bot/webhook', env.PUBLIC_URL).toString(), secret: env.MAX_WEBHOOK_SECRET }
@@ -50,6 +52,7 @@ if (env.DATABASE_URL) {
       new InviteService(db),
       new FleetService(db),
       jobs,
+      cards,
       env.MAX_BOT_TOKEN,
       me.username,
       app.log,

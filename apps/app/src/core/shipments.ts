@@ -316,6 +316,15 @@ export class ShipmentService {
     return row ?? null
   }
 
+  /** Все вошедшие участники перевозки — чтобы перерисовать их живые карточки. */
+  async participants(shipmentId: string): Promise<{ personId: string; maxUserId: number; role: Role }[]> {
+    return this.db
+      .select({ personId: person.id, maxUserId: person.maxUserId, role: participant.role })
+      .from(participant)
+      .innerJoin(person, eq(person.id, participant.personId))
+      .where(eq(participant.shipmentId, shipmentId))
+  }
+
   /** Роли человека в перевозке. */
   async rolesIn(shipmentId: string, personId: string): Promise<Role[]> {
     const rows = await this.db

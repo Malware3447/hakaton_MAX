@@ -2,7 +2,8 @@ import { eq } from 'drizzle-orm'
 import type { Effect, ErpAdapter, Messenger, OutMessage } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
 import { PgBoss } from 'pg-boss'
-import type { Outbox } from '../bot/outbox.ts'
+import type { NotifyMeta, Outbox } from '../bot/outbox.ts'
+import { MOVED_CARD, type CardStore } from '../bot/card-store.ts'
 import type { EffectSink } from '../core/shipments.ts'
 import type { Db } from '../db/client.ts'
 import { event, shipment } from '../db/schema.ts'
@@ -14,14 +15,19 @@ import { MaxApiError } from '../max/api.ts'
 // effect — последствия переходов, которые требуют внешних систем (учётка, оператор, QR);
 // subscription-check — самопроверка вебхука раз в 10 минут.
 
-export const Q = { notify: 'notify', effect: 'effect', subscription: 'subscription-check' } as const
+export const Q = { notify: 'notify', edit: 'edit', effect: 'effect', subscription: 'subscription-check' } as const
 
-interface NotifyJob {
+interface NotifyJob extends NotifyMeta {
   userId: number
   text: string
   buttons?: OutMessage['buttons']
   file?: { name: string; base64: string }
-  shipmentId?: string
+}
+
+interface EditJob {
+  mid: string
+  text: string
+  buttons?: OutMessage['buttons']
 }
 
 interface EffectJob {
@@ -35,6 +41,7 @@ export class Jobs implements Outbox, EffectSink {
     private readonly db: Db,
     private readonly messenger: Messenger,
     private readonly erp: ErpAdapter,
+    private readonly cards: CardStore,
     private readonly log: FastifyBaseLogger,
   ) {}
 
@@ -46,7 +53,11 @@ export class Jobs implements Outbox, EffectSink {
     this.boss.on('error', (err) => this.log.error({ err }, 'pg-boss'))
     await this.boss.start()
     await this.boss.createQueue(Q.notify, { retryLimit: 5, retryDelay: 2, retryBackoff: true })
+    await this.boss.createQueue(Q.edit, { retryLimit: 3, retryDelay: 2, retryBackoff: true })
     await this.boss.createQueue(Q.effect, { retryLimit: 10, retryDelay: 5, retryBackoff: true })
+    await this.boss.work<EditJob>(Q.edit, { pollingIntervalSeconds: 0.5 }, async (jobs) => {
+      for (const j of jobs) await this.runEdit(j.data)
+    })
     await this.boss.work<NotifyJob>(Q.notify, { pollingIntervalSeconds: 0.5 }, async (jobs) => {
       for (const j of jobs) await this.runNotify(j.data)
     })
@@ -68,10 +79,14 @@ export class Jobs implements Outbox, EffectSink {
 
   // ---------- постановка ----------
 
-  async send(userId: number, message: OutMessage, meta: { shipmentId?: string } = {}) {
-    const job: NotifyJob = { userId, text: message.text, buttons: message.buttons, shipmentId: meta.shipmentId }
+  async send(userId: number, message: OutMessage, meta: NotifyMeta = {}) {
+    const job: NotifyJob = { ...meta, userId, text: message.text, buttons: message.buttons }
     if (message.file) job.file = { name: message.file.name, base64: Buffer.from(message.file.bytes).toString('base64') }
     await this.boss.send(Q.notify, job)
+  }
+
+  async edit(mid: string, message: OutMessage) {
+    await this.boss.send(Q.edit, { mid, text: message.text, buttons: message.buttons } satisfies EditJob)
   }
 
   async enqueue(shipmentId: string, effects: Effect[]) {
@@ -83,15 +98,35 @@ export class Jobs implements Outbox, EffectSink {
   private async runNotify(j: NotifyJob) {
     const message: OutMessage = { text: j.text, buttons: j.buttons }
     if (j.file) message.file = { name: j.file.name, bytes: Buffer.from(j.file.base64, 'base64') }
+    let mid: string
     try {
-      await this.messenger.send(j.userId, message)
+      mid = (await this.messenger.send(j.userId, message)).mid
     } catch (err) {
-      // Остановил бота или ни разу его не запускал — повторять бессмысленно, отмечаем в журнале
+      // Остановил бота или ни разу его не запускал — повторять бессмысленно:
+      // отмечаем в журнале и предупреждаем того, кто за этого участника отвечает
       if (err instanceof MaxApiError && err.unreachable) {
         this.log.warn({ userId: j.userId, code: err.code }, 'участник недоступен в MAX')
         if (j.shipmentId) {
           await this.db.insert(event).values({ shipmentId: j.shipmentId, type: 'notify.failed', actorKind: 'system', payload: { code: err.code ?? String(err.status) } })
         }
+        if (j.escalate) await this.messenger.send(j.escalate.userId, { text: j.escalate.text }).catch((e) => this.log.warn({ err: e }, 'не удалось предупредить ответственного'))
+        return
+      }
+      throw err
+    }
+    if (j.card && j.shipmentId) {
+      const old = await this.cards.record(j.shipmentId, j.card.personId, mid, j.card.hash)
+      if (old) await this.edit(old, MOVED_CARD)
+    }
+  }
+
+  private async runEdit(j: EditJob) {
+    try {
+      await this.messenger.edit(j.mid, { text: j.text, buttons: j.buttons })
+    } catch (err) {
+      // Сообщение удалили или оно слишком старое — перерисовывать нечего
+      if (err instanceof MaxApiError && err.status < 500 && err.status !== 429) {
+        this.log.info({ mid: j.mid, code: err.code }, 'карточку не перерисовать')
         return
       }
       throw err

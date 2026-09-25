@@ -9,6 +9,7 @@ import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 import { TripFlows } from './trip-flows.ts'
 import type { Outbox } from './outbox.ts'
+import type { CardStore } from './card-store.ts'
 import type { FleetService } from '../core/fleet.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
@@ -58,6 +59,7 @@ export class Bot {
     invites: InviteService,
     fleet: FleetService,
     outbox: Outbox,
+    cards: CardStore,
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -67,6 +69,7 @@ export class Bot {
       shipments,
       invites,
       outbox,
+      cards,
       {
         reply: (to, m, n) => this.reply(to, m, n),
         notify: (to, t) => this.notify(to, t),
@@ -84,6 +87,10 @@ export class Bot {
   }
 
   async handle(u: MaxUpdate): Promise<void> {
+    await this.route(u)
+  }
+
+  private async route(u: MaxUpdate): Promise<unknown> {
     if (u.update_type === 'bot_started' && 'user' in u) {
       const p = await this.store.upsertPerson(u.user.user_id, fullName(u.user))
       await this.store.clearDialog(p.id)
@@ -113,9 +120,13 @@ export class Bot {
 
   // ---------- ответы ----------
 
-  private async reply(to: Reply, msg: OutMessage, notification: string | null = null) {
-    if (to.kind === 'callback') return this.messenger.answerCallback(to.callbackId, notification, msg)
-    await this.messenger.send(to.userId, msg)
+  /** Ответить тому, кто нажал или написал. Возвращает mid сообщения, где теперь стоит ответ. */
+  private async reply(to: Reply, msg: OutMessage, notification: string | null = null): Promise<string | null> {
+    if (to.kind === 'callback') {
+      await this.messenger.answerCallback(to.callbackId, notification, msg)
+      return to.mid
+    }
+    return (await this.messenger.send(to.userId, msg)).mid
   }
 
   private async notify(to: Reply, text: string) {

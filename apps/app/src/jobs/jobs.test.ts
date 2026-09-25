@@ -10,6 +10,7 @@ import { event, membership, mockErpWriteback, org, person } from '../db/schema.t
 import { resetDemo } from '../db/seed.ts'
 import { MaxApiError } from '../max/api.ts'
 import { Jobs } from './jobs.ts'
+import { CardStore } from '../bot/card-store.ts'
 
 // Очередь на настоящей базе. Нужна TEST_DATABASE_URL.
 const url = process.env.TEST_DATABASE_URL
@@ -43,7 +44,7 @@ describe.skipIf(!url)('очередь заданий', () => {
   beforeAll(async () => {
     conn = await openDb(url!)
     await resetDemo(conn.db, await readSeed())
-    jobs = new Jobs(Jobs.create(url!), conn.db, messenger, new MockErp(conn.db), pino({ level: 'silent' }))
+    jobs = new Jobs(Jobs.create(url!), conn.db, messenger, new MockErp(conn.db), new CardStore(conn.db), pino({ level: 'silent' }))
     await jobs.start()
   }, 30_000)
   afterAll(async () => {
@@ -76,5 +77,11 @@ describe.skipIf(!url)('очередь заданий', () => {
     await jobs.send(404, { text: 'не дойдёт' }, { shipmentId: s!.shipmentId! })
     const failed = await until(async () => (await conn.db.select().from(event).where(eq(event.type, 'notify.failed')))[0])
     expect(failed.payload).toEqual({ code: 'dialog.not.found' })
+  })
+
+  it('не дошло до участника — предупреждение получает ответственный', async () => {
+    await jobs.send(404, { text: 'ваш ход' }, { escalate: { userId: 77, text: 'Не можем написать водителю' } })
+    const warn = await until(async () => messenger.sent.find((s) => s.userId === 77))
+    expect(warn.m.text).toBe('Не можем написать водителю')
   })
 })

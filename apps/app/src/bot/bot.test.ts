@@ -12,6 +12,7 @@ import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
 import { InviteService } from '../core/invite-service.ts'
 import { FleetService } from '../core/fleet.ts'
+import { CardStore } from './card-store.ts'
 import { Bot } from './bot.ts'
 import { BotStore } from './store.ts'
 
@@ -23,15 +24,22 @@ class FakeMessenger implements Messenger {
   lastNotification: string | null = null
   /** что ушло людям новыми сообщениями, по user_id */
   inbox = new Map<number, OutMessage[]>()
+  /** правки сообщений: mid → последнее содержимое */
+  edits = new Map<string, OutMessage>()
+  private n = 0
   /** кто сейчас действует: last — ответ именно ему, уведомления другим туда не попадают */
   current = 0
+  /** все отправленные сообщения с их mid */
+  sentLog: { userId: number; mid: string; m: OutMessage }[] = []
   async send(userId: number, m: OutMessage) {
     if (userId === this.current) this.last = m
     this.inbox.set(userId, [...(this.inbox.get(userId) ?? []), m])
-    return { mid: 'm' }
+    const mid = `m${++this.n}`
+    this.sentLog.push({ userId, mid, m })
+    return { mid }
   }
-  async edit(_: string, m: OutMessage) {
-    this.last = m
+  async edit(mid: string, m: OutMessage) {
+    this.edits.set(mid, m)
   }
   async answerCallback(_: string, n: string | null, m?: OutMessage) {
     this.lastNotification = n
@@ -110,7 +118,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     conn = await openDb(url!)
     await resetDemo(conn.db, await readSeed())
     const directory = new MockDirectory(conn.db)
-    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), out, 'test-token', 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
 
@@ -452,6 +460,37 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(1, payloadOf(out.last, '1040')))
       expect(out.last?.text).toMatch(/груз у водителя/)
       expect(buttons(out.last)).toEqual(['Подписать накладную', 'Отменить перевозку', 'Обновить', 'В меню'])
+    })
+  })
+
+  describe('живые карточки', () => {
+    it('перевозчик принял заявку — карточка отправителя перерисована на месте, старая погашена', async () => {
+      await act(press(1, 'open:shipper'))
+      let erp: { payload: string } | undefined
+      for (let page = 0; !erp && page < 5; page++) {
+        await act(press(1, `sl:${page}`))
+        erp = (out.last?.buttons ?? []).flat().find((b) => b.text.startsWith('1049'))
+      }
+      await act(pressIn(1, erp!.payload, 'S-first'))
+      expect(out.last?.text).toMatch(/Перевозка ОТГ-2026-1049/)
+
+      await act(pressIn(1, payloadOf(out.last, 'Назначить перевозчика'), 'S-first'))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      const shipperCard = out.sentLog.filter((s) => s.userId === 1 && /Перевозка ОТГ-2026-1049/.test(s.m.text)).at(-1)!
+      expect(out.edits.get('S-first')?.text).toMatch(/актуальная ниже/)
+
+      const offer = out.sentLog.filter((s) => s.userId === 3).at(-1)!
+      expect(offer.m.text).toMatch(/Новая заявка/)
+      await act(pressIn(3, payloadOf(offer.m, 'Принять заявку'), offer.mid))
+      expect(out.edits.get(shipperCard.mid)?.text).toMatch(/Перевозка ОТГ-2026-1049[\s\S]*перевозчик назначает машину и водителя/)
+    })
+
+    it('повторная перерисовка без изменений не трогает сообщение', async () => {
+      const before = out.edits.size
+      const editsBefore = new Map(out.edits)
+      await act(press(3, 'tl:carrier'))
+      expect(out.edits.size).toBe(before)
+      expect([...out.edits.entries()]).toEqual([...editsBefore.entries()])
     })
   })
 })
