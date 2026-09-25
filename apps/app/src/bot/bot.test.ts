@@ -7,7 +7,7 @@ import { MockDirectory } from '../adapters/mock-directory.ts'
 import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
-import { participant } from '../db/schema.ts'
+import { participant, person, shipment } from '../db/schema.ts'
 import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
@@ -109,6 +109,7 @@ const buttons = (m: OutMessage | null) => (m?.buttons ?? []).flat().map((b) => b
 describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
   let conn: Awaited<ReturnType<typeof openDb>>
   let bot: Bot
+  let svc: ShipmentService
   const out = new FakeMessenger()
   const act = (u: MaxUpdate) => {
     out.current = actorOf(u)
@@ -129,7 +130,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
         },
       },
     ])
-    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, (svc = new ShipmentService(conn.db, new MockErp(conn.db), directory)), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
 
@@ -577,6 +578,94 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(701, 'add:carrier'))
       await act(text(701, '5002000020'))
       expect(out.last?.text).toMatch(/ликвидирована по данным ЕГРЮЛ — подключить её нельзя/)
+    })
+  })
+
+  describe('после выезда: выгрузка, получатель, приёмка', () => {
+    const personId = async (maxUserId: number) => (await conn.db.select().from(person).where(eq(person.maxUserId, maxUserId)))[0]!.id
+    const shipmentOf = async (ref: string) => (await conn.db.select().from(shipment).where(eq(shipment.erpRef, ref)))[0]!.id
+    const ev = (maxUserId: number) => ({ maxUserId, phoneSha256: 'ab'.repeat(32), callbackId: 'c', messageMid: 'm', buttonText: 'тест', at: new Date().toISOString() })
+
+    /** Подписи и регистрация — задачи Егора; здесь проводим перевозку до выезда прямо через ядро. */
+    async function driveToTransit(id: string, driverMax: number) {
+      const as = async (role: 'shipper' | 'carrier' | 'driver', max: number) => ({ kind: 'person' as const, personId: await personId(max), role })
+      const steps: [Parameters<typeof svc.execute>[0], Parameters<typeof svc.execute>[1]][] = []
+      const s = (await conn.db.select().from(shipment).where(eq(shipment.id, id)))[0]!
+      if (s.state === 'assigned') steps.push([{ type: 'driver.acceptTrip', shipmentId: id, payload: {} }, await as('driver', driverMax)])
+      if (['assigned', 'trip_accepted'].includes(s.state)) steps.push([{ type: 'driver.arrivedLoading', shipmentId: id, payload: {} }, await as('driver', driverMax)])
+      if (['assigned', 'trip_accepted', 'loading'].includes(s.state))
+        steps.push([{ type: 'driver.confirmLoading', shipmentId: id, payload: { remarks: null, evidence: ev(driverMax) } }, await as('driver', driverMax)])
+      steps.push([{ type: 'shipper.signT1', shipmentId: id, payload: { signatureId: 'demo-t1' } }, await as('shipper', 1)])
+      steps.push([{ type: 'carrier.signT2', shipmentId: id, payload: { signatureId: 'demo-t2' } }, await as('carrier', 3)])
+      steps.push([{ type: 'operator.registered', shipmentId: id, payload: { operatorDocId: `op-${id}`, uid: `UID-${id.slice(0, 4)}` } }, { kind: 'operator' }])
+      for (const [c, a] of steps) {
+        const r = await svc.execute(c, a)
+        if (!r.ok) throw new Error(`${c.type}: ${r.message}`)
+      }
+    }
+
+    it('ОТГ-1056: машина выехала — получателя ещё нет в боте, ссылка у отправителя и у водителя', async () => {
+      await act(press(800, 'add:driver'))
+      await openRef(act, out, '1056')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, 'nvh'))
+      await act(text(3, 'Н001НН116'))
+      await act(text(3, 'ГАЗ Валдай'))
+      await act(press(3, 'own:own'))
+      await act(contact(3, { user_id: 800, first_name: 'Семён' }))
+      const id = await shipmentOf('ОТГ-2026-1056')
+      await driveToTransit(id, 800)
+
+      await bot.consigneeArrival(id)
+      const toShipper = out.inbox.get(1)!.at(-1)!
+      expect(toShipper.text).toMatch(/Машина по перевозке ОТГ-2026-1056 выехала[\s\S]*приёмщику ООО «Волга»[\s\S]*start=inv_/)
+      const toDriver = out.inbox.get(800)!.at(-1)!
+      expect(toDriver.buttons?.flat()[0]).toMatchObject({ kind: 'link', text: 'Приглашение приёмщику' })
+
+      const token = tokenIn(toShipper)
+      await act(started(900, `inv_${token}`))
+      expect(out.last?.text).toMatch(/Вы в перевозке как получатель[\s\S]*в пути/)
+    })
+
+    it('водитель: «Я на выгрузке» → «Груз сдан» с номером → у получателя приёмка', async () => {
+      await act(press(800, 'trip'))
+      await act(press(800, payloadOf(out.last, 'Я на выгрузке')))
+      expect(out.last?.text).toMatch(/машина на выгрузке/)
+      await act(pressIn(800, payloadOf(out.last, 'Груз сдан')))
+      expect(out.last?.text).toMatch(/Подтвердите номер телефона/)
+      await act(ownPhone(800, '79170008000'))
+      expect(out.last?.text).toMatch(/груз сдан, идёт приёмка/)
+      const turn = out.inbox.get(900)!.at(-1)!
+      expect(turn.text).toMatch(/Сейчас ваш ход/)
+      expect(buttons(turn)).toEqual(['Принято без расхождений', 'Принято частично', 'Отказ от груза', 'Обновить', 'В меню'])
+    })
+
+    it('получатель: «Принято частично» → номер → расхождения → в карточке и дальше подпись', async () => {
+      const turn = out.inbox.get(900)!.at(-1)!
+      await act(pressIn(900, payloadOf(turn, 'Принято частично')))
+      await act(ownPhone(900, '79270009000'))
+      expect(out.last?.text).toMatch(/Расхождения при приёмке/)
+      await act(text(900, 'Не хватает 2 канистр 5W-40'))
+      expect(out.last?.text).toMatch(/нужна подпись получателя[\s\S]*Приёмка: принято частично — Не хватает 2 канистр 5W-40/)
+      expect(buttons(out.last)).toContain('Подписать накладную')
+      await act(press(900, 'open:consignee'))
+      expect(buttons(out.last)).toContain('Приёмка (1)')
+    })
+
+    it('ОТГ-1040 того же получателя: приёмщик уже в боте — карточка сразу ему, без ссылок', async () => {
+      const id = await shipmentOf('ОТГ-2026-1040')
+      await driveToTransit(id, 4)
+      const before = out.inbox.get(1)!.length
+      await bot.consigneeArrival(id)
+      const arrival = out.inbox.get(900)!.at(-1)!.text
+      expect(arrival).toMatch(/Перевозка ОТГ-2026-1040/)
+      expect(arrival).toMatch(/К вам едет груз/)
+      expect(out.inbox.get(1)!.length).toBe(before)
+      await act(press(900, 'ci'))
+      expect(buttons(out.last)).toEqual(expect.arrayContaining([expect.stringMatching(/ОТГ-2026-1040 · в пути/), expect.stringMatching(/ОТГ-2026-1056/)]))
     })
   })
 })

@@ -181,6 +181,16 @@ export class BotStore {
       .where(and(eq(membership.personId, personId), eq(membership.role, role), sql`${membership.orgId} is null`))
   }
 
+  /** Люди организации в роли: администратор первым. */
+  async orgMembers(orgId: string, role: Role) {
+    return this.db
+      .select({ personId: person.id, maxUserId: person.maxUserId, name: person.name })
+      .from(membership)
+      .innerJoin(person, eq(person.id, membership.personId))
+      .where(and(eq(membership.orgId, orgId), eq(membership.role, role)))
+      .orderBy(sql`${membership.isAdmin} desc`, membership.createdAt)
+  }
+
   async erpShipmentCount(shipperInn: string): Promise<number> {
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })

@@ -174,6 +174,11 @@ export class ShipmentFlows {
         await this.ui.reply(to, waitingList(await this.shipments.waiting(p.id, role), role))
         return true
       }
+      case 'ci': {
+        const list = (await this.shipments.listFor(p.id, 'consignee')).filter((s) => s.state !== 'closed' && s.state !== 'cancelled')
+        await this.ui.reply(to, shipmentList('Ко мне едут', list, 'consignee', 'Сейчас к вам ничего не едет.'))
+        return true
+      }
       case 'ol':
         await this.ui.reply(to, shipmentList('Новые заявки', await this.shipments.listFor(p.id, 'carrier', ['offered']), 'carrier', 'Новых заявок нет.'))
         return true
@@ -350,6 +355,52 @@ export class ShipmentFlows {
       })
       .catch((err) => this.log.warn({ err }, 'не удалось написать пригласившему'))
     return this.ui.reply(to, { text: 'Попросили новую ссылку у того, кто вас приглашал. Когда он её пришлёт — откройте.', buttons: [[cb('В меню', 'root')]] })
+  }
+
+  // ---------- получатель, когда машина выехала ----------
+
+  /**
+   * Позвать получателя (последствие inviteConsignee после регистрации накладной).
+   * Уже участник — карточка «к вам едет груз»; в компании-получателе есть приёмщик в боте —
+   * назначаем его; иначе приглашение: отправителю переслать получателю, водителю — показать на складе.
+   */
+  async consigneeArrival(shipmentId: string) {
+    const view = await this.shipments.view(shipmentId, 'consignee')
+    if (!view) return
+    const card = async (userId: number, personId: string) => {
+      const msg = shipmentCard(view, `🚚 <b>К вам едет груз</b> от ${esc(view.shipper.name)}. Когда машина приедет, водитель отметит выгрузку — и начнётся приёмка.`)
+      const sent = await this.messenger.send(userId, msg, { shipmentId, card: { personId, hash: renderHash(msg) } }).catch((err) => this.log.warn({ err }, 'не удалось написать получателю'))
+      if (sent && 'mid' in sent) await this.rememberCard(shipmentId, personId, sent.mid, renderHash(msg))
+    }
+
+    const joined = await this.shipments.participantOf(shipmentId, 'consignee')
+    if (joined) return card(joined.maxUserId, joined.personId)
+
+    const [known] = await this.store.orgMembers(view.consignee.id, 'consignee')
+    if (known) {
+      await this.shipments.assignParticipant(shipmentId, 'consignee', known.personId)
+      return card(known.maxUserId, known.personId)
+    }
+
+    const shipper = await this.shipments.participantOf(shipmentId, 'shipper')
+    const token = await this.shipments.inviteRole(shipmentId, 'consignee', shipper?.personId ?? null)
+    const link = inviteLink(this.botUsername, token)
+    if (shipper) {
+      await this.messenger
+        .send(shipper.maxUserId, {
+          text: `🚚 Машина по перевозке ${esc(view.erpRef)} выехала. Перешлите приглашение приёмщику ${esc(view.consignee.name)} — по нему он примет груз и подпишет накладную без кабинета и своего ЭДО:\n${link}`,
+        }, { shipmentId })
+        .catch((err) => this.log.warn({ err }, 'не удалось написать отправителю'))
+    }
+    const driver = await this.shipments.participantOf(shipmentId, 'driver')
+    if (driver) {
+      await this.messenger
+        .send(driver.maxUserId, {
+          text: `Ссылка для приёмщика ${esc(view.consignee.name)}: если на складе его ещё нет в боте, покажите или перешлите ему.`,
+          buttons: [[{ text: 'Приглашение приёмщику', kind: 'link', payload: link }]],
+        }, { shipmentId })
+        .catch((err) => this.log.warn({ err }, 'не удалось написать водителю'))
+    }
   }
 
   // ---------- экраны ----------

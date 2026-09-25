@@ -69,6 +69,8 @@ if (env.DATABASE_URL) {
       ])
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
 
+    jobs.onEffect('inviteConsignee', (id) => bot.consigneeArrival(id))
+
     // Все обновления — через inbox: повторы MAX отсекаются, упавшие повторяются раз в минуту
     const inbox = new Inbox(db, (u) => bot.handle(u), app.log)
     await jobs.start({ webhook, inboxRetry: () => inbox.retryPending() })

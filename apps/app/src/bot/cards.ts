@@ -51,31 +51,43 @@ const fmt = (iso: string | Date | null) =>
     : 'не указана'
 const fmtDay = (d: Date | null) => (d ? d.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit' }) : '')
 
-/** Кнопки для действия: простые выполняются сразу, остальные открывают ввод или пока заглушки. */
-function actionButtons(cmd: CommandType, id: string): Button[] {
+/** Кнопки для действия — строками: простые выполняются сразу, остальные открывают ввод или пока заглушки. */
+function actionRows(cmd: CommandType, id: string): Button[][] {
   switch (cmd) {
     case 'shipper.offerCarrier':
-      return [cb('Назначить перевозчика', S.assignCarrier(id))]
+      return [[cb('Назначить перевозчика', S.assignCarrier(id))]]
     case 'carrier.accept':
-      return [cb('Принять заявку', S.run(cmd, id))]
+      return [[cb('Принять заявку', S.run(cmd, id))]]
     case 'carrier.decline':
-      return [cb('Отклонить', S.decline(id))]
+      return [[cb('Отклонить', S.decline(id))]]
     case 'carrier.assign':
-      return [cb('Назначить машину и водителя', `as:${id}`)]
+      return [[cb('Назначить машину и водителя', `as:${id}`)]]
     case 'driver.acceptTrip':
-      return [cb('Принять рейс', S.run(cmd, id))]
+      return [[cb('Принять рейс', S.run(cmd, id))]]
     case 'driver.declineTrip':
-      return [cb('Отказаться от рейса', `dt:${id}`)]
+      return [[cb('Отказаться от рейса', `dt:${id}`)]]
     case 'driver.arrivedLoading':
-      return [cb('Я на погрузке', S.run(cmd, id))]
+      return [[cb('Я на погрузке', S.run(cmd, id))]]
     case 'driver.confirmLoading':
-      return [cb('Всё верно, груз принят', `cl:ok:${id}`), cb('Есть замечания', `cl:rm:${id}`)]
+      return [[cb('Всё верно, груз принят', `cl:ok:${id}`), cb('Есть замечания', `cl:rm:${id}`)]]
+    case 'driver.arrivedUnloading':
+      return [[cb('Я на выгрузке', S.run(cmd, id))]]
+    case 'driver.confirmDelivered':
+      return [[cb('Груз сдан', `pep:delivered:${id}`)]]
+    case 'consignee.recordAcceptance':
+      return [
+        [cb('Принято без расхождений', `pep:accept_full:${id}`)],
+        [cb('Принято частично', `pep:accept_partial:${id}`), cb('Отказ от груза', `pep:accept_refused:${id}`)],
+      ]
     case 'shipper.signT1':
-      return [cb('Подписать накладную', P.stub(cmd))]
+    case 'carrier.signT2':
+    case 'consignee.signT3':
+    case 'carrier.signT4':
+      return [[cb('Подписать накладную', P.stub(cmd))]]
     case 'shipper.cancel':
-      return [cb('Отменить перевозку', `cx:${id}`)]
+      return [[cb('Отменить перевозку', `cx:${id}`)]]
     default:
-      return [cb('Следующий шаг', P.stub(cmd))]
+      return [[cb('Следующий шаг', P.stub(cmd))]]
   }
 }
 
@@ -94,13 +106,17 @@ export function shipmentCard(v: ShipmentView, note?: string): OutMessage {
     `Перевозчик: ${v.carrier ? esc(v.carrier.name) : '—'}`,
   )
   if (v.loadingRemarks) lines.push(`Замечания при погрузке: ${esc(v.loadingRemarks)}`)
+  if (v.acceptance) {
+    const r = { full: 'принято без расхождений', partial: 'принято частично', refused: 'отказ от груза' }[v.acceptance.result]
+    lines.push(`Приёмка: ${r}${v.acceptance.discrepancies ? ` — ${esc(v.acceptance.discrepancies)}` : ''}`)
+  }
   if (v.vehicle || v.driver) lines.push(`Машина: ${v.vehicle ? esc(`${v.vehicle.brand} ${v.vehicle.plate}`) : '—'}, водитель: ${v.driver ? esc(v.driver.name) : '—'}`)
   lines.push('', `Груз: ${v.cargo.places} мест, ${v.cargo.grossKg} кг`)
   for (const l of v.cargo.lines.slice(0, 3)) lines.push(`• ${esc(l.name)} — ${l.qty} шт.`)
   if (v.cargo.lines.length > 3) lines.push(`• и ещё ${v.cargo.lines.length - 3}`)
   if (v.turn === v.viewerRole && v.actions.length) lines.push('', '<b>Сейчас ваш ход.</b>')
 
-  const buttons: Button[][] = v.actions.map((a) => actionButtons(a, v.id))
+  const buttons: Button[][] = v.actions.flatMap((a) => actionRows(a, v.id))
   buttons.push([cb('Обновить', S.view(v.id)), cb('В меню', P.open(v.viewerRole))])
   return { text: lines.join('\n'), buttons }
 }

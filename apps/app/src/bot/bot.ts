@@ -94,6 +94,11 @@ export class Bot {
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
   }
 
+  /** Последствие inviteConsignee из очереди: позвать получателя, когда машина выехала. */
+  consigneeArrival(shipmentId: string) {
+    return this.flows.consigneeArrival(shipmentId)
+  }
+
   async handle(u: MaxUpdate): Promise<void> {
     await this.route(u)
   }
