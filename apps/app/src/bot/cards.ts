@@ -73,7 +73,7 @@ function actionButtons(cmd: CommandType, id: string): Button[] {
     case 'shipper.signT1':
       return [cb('Подписать накладную', P.stub(cmd))]
     case 'shipper.cancel':
-      return [cb('Отменить перевозку', P.stub(cmd))]
+      return [cb('Отменить перевозку', `cx:${id}`)]
     default:
       return [cb('Следующий шаг', P.stub(cmd))]
   }

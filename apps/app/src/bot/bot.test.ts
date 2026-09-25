@@ -413,4 +413,45 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(mine.some((m) => /Вам назначен рейс/.test(m.text))).toBe(true)
     })
   })
+
+  describe('отмена перевозки', () => {
+    it('отправитель отменяет с подтверждением и причиной, перевозчик и водитель узнают один раз', async () => {
+      await openRef(act, out, '1047')
+      await act(press(1, payloadOf(out.last, 'Отменить перевозку')))
+      expect(out.last?.text).toMatch(/Отменить перевозку ОТГ-2026-1047\?[\s\S]*освободятся/)
+      await act(press(1, payloadOf(out.last, 'Да, отменить')))
+      const before = out.inbox.get(3)!.length
+      await act(press(1, payloadOf(out.last, 'Перенос отгрузки')))
+      expect(out.last?.text).toMatch(/Перевозка отменена: Перенос отгрузки[\s\S]*Статус: отменена/)
+      const toCarrier = out.inbox.get(3)!.slice(before)
+      expect(toCarrier).toHaveLength(1)
+      expect(toCarrier[0]!.text).toMatch(/ОТГ-2026-1047 отменена отправителем: Перенос отгрузки/)
+    })
+
+    it('после отмены кнопки участников не работают, а машина и водитель свободны', async () => {
+      await act(press(3, 'tl:carrier'))
+      await act(press(3, payloadOf(out.last, 'ОТГ-2026-1047')))
+      expect(buttons(out.last)).toEqual(['Обновить', 'В меню'])
+
+      await openRef(act, out, '1048')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'ГАЗон Next')))
+      const before = out.inbox.get(3)!.length
+      await act(contact(3, { user_id: 3, first_name: 'Олег' }))
+      // перевозчик здесь сам себе водитель: ему приходят и ответ, и «Вам назначен рейс»
+      const texts = out.inbox.get(3)!.slice(before).map((m) => m.text)
+      expect(texts.some((x) => /Машина и водитель назначены/.test(x))).toBe(true)
+      expect(texts.some((x) => /Вам назначен рейс/.test(x))).toBe(true)
+    })
+
+    it('после погрузки, но до подписи Т1 отменить ещё можно (запрет после Т1 — в тестах домена)', async () => {
+      await act(press(1, 'sl:0'))
+      await act(press(1, payloadOf(out.last, '1040')))
+      expect(out.last?.text).toMatch(/груз у водителя/)
+      expect(buttons(out.last)).toEqual(['Подписать накладную', 'Отменить перевозку', 'Обновить', 'В меню'])
+    })
+  })
 })

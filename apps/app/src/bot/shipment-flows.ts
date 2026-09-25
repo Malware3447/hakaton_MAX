@@ -32,6 +32,8 @@ const DECLINE_REASONS: Record<'carrier.decline' | 'driver.declineTrip', string[]
   'driver.declineTrip': ['Машина неисправна', 'Не успеваю к погрузке', 'Заболел'],
 }
 
+const CANCEL_REASONS = ['Заказ отменён покупателем', 'Перенос отгрузки', 'Ошибка в отгрузке']
+
 const FAIL_TEXT: Record<string, string> = {
   already_done: 'Уже сделано',
   wrong_state: 'Сейчас это действие недоступно',
@@ -131,6 +133,34 @@ export class ShipmentFlows {
         })
         return true
       }
+      case 'cx': {
+        const view = await this.shipments.view(arg, 'shipper')
+        if (!view) return this.ui.notify(to, 'Перевозка не найдена').then(() => true)
+        await this.ui.reply(to, {
+          text: [
+            `<b>Отменить перевозку ${esc(view.erpRef)}?</b>`,
+            '',
+            'Вернуть её будет нельзя.',
+            view.carrier ? 'Перевозчик и водитель получат уведомление, машина и водитель освободятся.' : '',
+          ].join('\n').trim(),
+          buttons: [[cb('Да, отменить', `cy:${arg}`)], [cb('Нет', S.view(arg))]],
+        })
+        return true
+      }
+      case 'cy':
+        await this.store.setDialog(p.id, { step: 'await:cancel_reason', context: { shipmentId: arg } })
+        await this.ui.reply(to, {
+          text: '<b>Причина отмены</b>\n\nВыберите или напишите свою — участники её увидят.',
+          buttons: [...CANCEL_REASONS.map((r, i) => [cb(r, `cr:${i}`)]), [cb('Не отменять', S.view(arg))]],
+        })
+        return true
+      case 'cr': {
+        const d = await this.store.getDialog(p.id)
+        const reason = CANCEL_REASONS[Number(arg)]
+        if (d?.step !== 'await:cancel_reason' || !reason) return false
+        await this.cancel(p, String(d.context.shipmentId), reason, to)
+        return true
+      }
       case 'wl': {
         const role = arg as Role
         await this.ui.reply(to, waitingList(await this.shipments.waiting(p.id, role), role))
@@ -158,6 +188,14 @@ export class ShipmentFlows {
         return true
       }
       await this.decline(p, d, text, to)
+      return true
+    }
+    if (d.step === 'await:cancel_reason') {
+      if (text.length < 3) {
+        await this.ui.reply(to, { text: 'Причина слишком короткая. Напишите подробнее или выберите кнопкой выше.' })
+        return true
+      }
+      await this.cancel(p, String(d.context.shipmentId), text, to)
       return true
     }
     if (d.step === 'await:carrier_contact') {
@@ -351,6 +389,25 @@ export class ShipmentFlows {
     const text = role === 'carrier' ? 'Заявка отклонена, отправитель получит причину.' : 'Вы отказались от рейса, перевозчик получит причину.'
     await this.ui.reply(to, { text, buttons: [[cb('В меню', `open:${role}`)]] })
     await this.afterTransition(res, { personId: p.id, role }, reason)
+  }
+
+  /** Отмена до подписи Т1: участникам — уведомление с причиной; статус в учётку уходит через очередь. */
+  private async cancel(p: PersonRow, shipmentId: string, reason: string, to: Reply) {
+    await this.store.clearDialog(p.id)
+    const res = await this.shipments.execute({ type: 'shipper.cancel', shipmentId, payload: { reason } }, { kind: 'person', personId: p.id, role: 'shipper' })
+    if (!res.ok) return this.failed(res, to)
+    await this.showCard(p, shipmentId, to, `Перевозка отменена: ${esc(reason)}.`)
+
+    const view = await this.shipments.view(shipmentId, 'shipper')
+    const notified = new Set<string>([p.id])
+    for (const role of ['carrier', 'driver', 'consignee'] as const) {
+      const who = await this.shipments.participantOf(shipmentId, role)
+      if (!who || notified.has(who.personId)) continue
+      notified.add(who.personId)
+      await this.messenger
+        .send(who.maxUserId, { text: `❌ Перевозка ${esc(view?.erpRef ?? '')} отменена отправителем: ${esc(reason)}.`, buttons: [[cb('В меню', 'root')]] }, { shipmentId })
+        .catch((err) => this.log.warn({ err }, 'не удалось уведомить об отмене'))
+    }
   }
 
   async failed(res: Extract<ExecResult, { ok: false }>, to: Reply) {
