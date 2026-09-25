@@ -18,6 +18,8 @@ import type { BotStore, DialogState, PersonRow } from './store.ts'
 export const SIGN: Partial<Record<TitleKind, { role: Role; command: Command['type']; who: string }>> = {
   T1: { role: 'shipper', command: 'shipper.signT1', who: 'отправителя' },
   T2: { role: 'carrier', command: 'carrier.signT2', who: 'перевозчика' },
+  T3: { role: 'consignee', command: 'consignee.signT3', who: 'получателя' },
+  T4: { role: 'carrier', command: 'carrier.signT4', who: 'перевозчика о выдаче груза' },
 }
 
 const GOSKEY_BOT = 'https://max.ru/goskey_bot'
@@ -108,7 +110,7 @@ export class SignFlows {
     const sig = await this.download(pick.payload!.url!)
     const org = (await this.store.roles(p.id)).find((r) => r.role === spec.role)?.org
     const view = await this.shipments.view(shipmentId, spec.role)
-    const expectedInn = (spec.role === 'shipper' ? view?.shipper.inn : view?.carrier?.inn) ?? org?.inn ?? ''
+    const expectedInn = ({ shipper: view?.shipper.inn, carrier: view?.carrier?.inn, consignee: view?.consignee.inn, driver: undefined })[spec.role] ?? org?.inn ?? ''
     const res = await this.verifier.verify({ document: t.bytes, sig, expectedInn, declaredInn: org?.inn ?? null, sentAt: new Date(sentAt) })
     if (!res.ok) {
       const why = res.checks.filter((c) => !c.ok).map((c) => `• ${esc(c.message)}`)

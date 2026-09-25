@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import type { Role, TitleKind } from '@nk/domain'
-import { buildT1, buildT2, splitName, type Party, type TitleFile } from '@nk/etrn'
+import { buildT1, buildT2, buildT3, buildT4, splitName, type Party, type PrevTitle, type TitleFile } from '@nk/etrn'
 import type { Db } from '../db/client.ts'
 import { event, org, participant, person, shipment, signature, title, vehicle } from '../db/schema.ts'
 
@@ -37,12 +37,13 @@ export class TitleService {
   async ensure(shipmentId: string, kind: TitleKind): Promise<StoredTitle> {
     const existing = await this.get(shipmentId, kind)
     if (existing) return existing
-    const file = kind === 'T1' ? await this.buildT1(shipmentId) : kind === 'T2' ? await this.buildT2(shipmentId) : null
-    if (!file) throw new TitleError(`титул ${kind} пока не собирается`)
-    const t1 = kind === 'T2' ? await this.get(shipmentId, 'T1') : null
+    const build = { T1: () => this.buildT1(shipmentId), T2: () => this.buildT2(shipmentId), T3: () => this.buildT3(shipmentId), T4: () => this.buildT4(shipmentId) }[kind]
+    const file = await build()
+    const prevKind = ({ T1: null, T2: 'T1', T3: 'T2', T4: 'T3' } as const)[kind]
+    const prev = prevKind ? await this.get(shipmentId, prevKind) : null
     await this.db
       .insert(title)
-      .values({ shipmentId, kind, idFile: file.fileId, xml: Buffer.from(file.bytes), sha256: file.sha256, prevTitleId: t1?.id ?? null })
+      .values({ shipmentId, kind, idFile: file.fileId, xml: Buffer.from(file.bytes), sha256: file.sha256, prevTitleId: prev?.id ?? null })
       .onConflictDoNothing()
     return (await this.get(shipmentId, kind))!
   }
@@ -128,19 +129,26 @@ export class TitleService {
     })
   }
 
-  private async buildT2(shipmentId: string): Promise<TitleFile> {
-    const [s] = await this.db.select().from(shipment).where(eq(shipment.id, shipmentId))
-    if (!s) throw new TitleError('перевозка не найдена')
-    const t1 = await this.get(shipmentId, 'T1')
-    if (!t1) throw new TitleError('первый титул ещё не собран')
-    if (!s.uid) throw new TitleError('оператор ещё не выдал номер накладной')
+  /** Предыдущий титул для сцепки: ИдФайл, когда сформирован, и подпись стороны целиком (CMS) для атрибута ЭП. */
+  private async prev(shipmentId: string, kind: TitleKind, role: Role, what: string): Promise<PrevTitle> {
+    const t = await this.get(shipmentId, kind)
+    if (!t) throw new TitleError(`${what} ещё не собран`)
     const [sig] = await this.db
       .select()
       .from(signature)
-      .where(and(eq(signature.titleId, t1.id), eq(signature.role, 'shipper'), eq(signature.verified, true)))
+      .where(and(eq(signature.titleId, t.id), eq(signature.role, role), eq(signature.verified, true)))
       .orderBy(desc(signature.createdAt))
       .limit(1)
-    if (!sig) throw new TitleError('первый титул ещё не подписан')
+    if (!sig) throw new TitleError(`${what} ещё не подписан`)
+    // У демо-подписи CMS нет — метка модели вместо подписи
+    return { fileId: t.fileId, createdAt: t.createdAt, signatureBase64: Buffer.from(sig.cms ?? Buffer.from('DEMO-SIGNATURE-MODEL')).toString('base64') }
+  }
+
+  private async buildT2(shipmentId: string): Promise<TitleFile> {
+    const [s] = await this.db.select().from(shipment).where(eq(shipment.id, shipmentId))
+    if (!s) throw new TitleError('перевозка не найдена')
+    if (!s.uid) throw new TitleError('оператор ещё не выдал номер накладной')
+    const t1 = await this.prev(shipmentId, 'T1', 'shipper', 'первый титул')
     const carrierMan = await this.who(shipmentId, 'carrier')
     const [carrierOrg] = s.carrierOrgId ? await this.db.select().from(org).where(eq(org.id, s.carrierOrgId)) : []
     if (!carrierMan || !carrierOrg) throw new TitleError('нет перевозчика')
@@ -148,12 +156,47 @@ export class TitleService {
       createdAt: new Date(),
       senderId: participantId(carrierOrg.inn),
       receiverId: OPERATOR_ID,
-      // Подпись Т1 целиком (CMS) — в атрибут ЭП; у демо-подписи CMS нет — метка модели
-      t1: { fileId: t1.fileId, createdAt: t1.createdAt, signatureBase64: sig.cms ? Buffer.from(sig.cms).toString('base64') : Buffer.from('DEMO-SIGNATURE-MODEL').toString('base64') },
+      t1,
       uid: s.uid,
       remarks: s.loadingRemarks ? { cargo: s.loadingRemarks } : null,
       signer: splitName(carrierMan.name),
     })
+  }
+
+  private async buildT3(shipmentId: string): Promise<TitleFile> {
+    const [s] = await this.db.select().from(shipment).where(eq(shipment.id, shipmentId))
+    if (!s?.uid) throw new TitleError('нет номера накладной')
+    if (!s.acceptance) throw new TitleError('приёмка ещё не отмечена')
+    const t2 = await this.prev(shipmentId, 'T2', 'carrier', 'титул перевозчика')
+    const consigneeMan = await this.who(shipmentId, 'consignee')
+    const [consigneeOrg] = await this.db.select().from(org).where(eq(org.id, s.consigneeOrgId))
+    if (!consigneeMan || !consigneeOrg) throw new TitleError('нет получателя')
+    const arrived = (await this.eventAt(shipmentId, 'driver.arrivedUnloading')) ?? s.turnSince
+    const departed = (await this.eventAt(shipmentId, 'consignee.recordAcceptance')) ?? new Date()
+    const a = s.acceptance
+    return buildT3({
+      createdAt: new Date(),
+      senderId: participantId(consigneeOrg.inn),
+      receiverId: OPERATOR_ID,
+      t2,
+      uid: s.uid,
+      consigneeName: consigneeOrg.name,
+      acceptance:
+        a.result === 'refused'
+          ? { result: 'refused', reason: a.discrepancies ?? 'Отказ от груза' }
+          : { result: a.result, discrepancies: a.discrepancies, arrived, departed, places: s.cargo.places, grossKg: s.cargo.grossKg, unloadingAddress: s.unloadingAddress },
+      signer: splitName(consigneeMan.name),
+    })
+  }
+
+  private async buildT4(shipmentId: string): Promise<TitleFile> {
+    const [s] = await this.db.select().from(shipment).where(eq(shipment.id, shipmentId))
+    if (!s?.uid) throw new TitleError('нет номера накладной')
+    const t3 = await this.prev(shipmentId, 'T3', 'consignee', 'титул получателя')
+    const carrierMan = await this.who(shipmentId, 'carrier')
+    const [carrierOrg] = s.carrierOrgId ? await this.db.select().from(org).where(eq(org.id, s.carrierOrgId)) : []
+    if (!carrierMan || !carrierOrg) throw new TitleError('нет перевозчика')
+    return buildT4({ createdAt: new Date(), senderId: participantId(carrierOrg.inn), receiverId: OPERATOR_ID, t3, uid: s.uid, signer: splitName(carrierMan.name) })
   }
 }
 

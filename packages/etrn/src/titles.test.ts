@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decode1251 } from './format.ts'
-import { buildT1, buildT2, splitName, type T1Input } from './titles.ts'
+import { buildT1, buildT2, buildT3, buildT4, splitName, type T1Input } from './titles.ts'
 import { validateTitle } from './testing/xsd.ts'
 
 // ОТГ-2026-1040 из демо-данных: сценарий показа
@@ -87,6 +87,44 @@ describe('Т2 — приём груза перевозчиком', () => {
     const t2 = buildT2({ ...base, remarks: { cargo: 'Недостача 2 канистр', places: 'Принято 44 места из 46' } })
     expect((await validateTitle('T2', t2.bytes)).valid).toBe(true)
     expect(decode1251(t2.bytes)).toContain('ЗамСостГруз="Недостача 2 канистр"')
+  })
+})
+
+describe('Т3 и Т4 — приёмка и закрытие', () => {
+  const prev = (fileId: string) => ({ fileId, createdAt: new Date('2026-09-25T12:00:00Z'), signatureBase64: Buffer.from('CMS').toString('base64') })
+  const base = { createdAt: new Date('2026-09-25T13:10:00Z'), senderId: '2DM-1167049238', receiverId: '2DM-DEMO-OPER', uid: 'a5b0c7e2-3f4d-4e21-9c8b-1d2e3f4a5b6c', consigneeName: 'ООО «Волга»', signer: { surname: 'К', name: 'Дмитрий' } }
+  const accepted = (result: 'full' | 'partial', discrepancies: string | null) => ({
+    result,
+    discrepancies,
+    arrived: new Date('2026-09-25T12:30:00Z'),
+    departed: new Date('2026-09-25T13:05:00Z'),
+    places: 86,
+    grossKg: 2730,
+    unloadingAddress: '420032, г. Казань, ул. Тэцевская, 4',
+  })
+
+  it('Т3: принято полностью — проходит XSD', async () => {
+    const t3 = buildT3({ ...base, t2: prev('ON_TRNACLPPRIN_X'), acceptance: accepted('full', null) })
+    expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
+    expect(decode1251(t3.bytes)).toContain('СодОпПр="Груз принят"')
+  })
+
+  it('Т3: принято частично с расхождениями — проходит XSD', async () => {
+    const t3 = buildT3({ ...base, t2: prev('ON_TRNACLPPRIN_X'), acceptance: accepted('partial', 'Не хватает 2 канистр') })
+    expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
+    expect(decode1251(t3.bytes)).toContain('ОбщСвСост="Расхождения: Не хватает 2 канистр"')
+  })
+
+  it('Т3: отказ от груза с причиной — проходит XSD', async () => {
+    const t3 = buildT3({ ...base, t2: prev('ON_TRNACLPPRIN_X'), acceptance: { result: 'refused', reason: 'Бочки повреждены' } })
+    expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
+    expect(decode1251(t3.bytes)).toContain('ПричОтк="Бочки повреждены"')
+  })
+
+  it('Т4: выдача груза, ссылка на Т3 — проходит XSD', async () => {
+    const t4 = buildT4({ createdAt: base.createdAt, senderId: '2DM-3603931407', receiverId: base.receiverId, uid: base.uid, t3: prev('ON_TRNACLGRPO_X'), signer: { surname: 'Романов', name: 'Олег' } })
+    expect((await validateTitle('T4', t4.bytes)).errors).toEqual([])
+    expect(decode1251(t4.bytes)).toContain('ИдФайлИнфГП="ON_TRNACLGRPO_X"')
   })
 })
 

@@ -192,3 +192,94 @@ export function splitName(full: string): Person {
   if (parts.length === 2) return { surname: parts[1]!, name: parts[0]! }
   return { surname: parts[0]!, name: parts[1]!, patronymic: parts.slice(2).join(' ') }
 }
+
+/** Предыдущий титул в цепочке: его ИдФайл, когда сформирован и подпись (CMS в base64). */
+export interface PrevTitle {
+  fileId: string
+  createdAt: Date
+  signatureBase64: string
+}
+
+export interface T3Input {
+  createdAt: Date
+  senderId: string
+  receiverId: string
+  /** Т2, к которому относится приёмка */
+  t2: PrevTitle
+  uid: string
+  consigneeName: string
+  acceptance:
+    | {
+        result: 'full' | 'partial'
+        /** расхождения при частичной приёмке */
+        discrepancies: string | null
+        arrived: Date
+        departed: Date
+        places: number
+        grossKg: number
+        unloadingAddress: string
+      }
+    | { result: 'refused'; reason: string }
+  signer: Person
+  guid?: string
+}
+
+/** Т3 — грузополучатель о приёме груза: принято полностью, частично с расхождениями или отказ. */
+export function buildT3(i: T3Input): TitleFile {
+  const id = fileId(TITLE_PREFIX.T3, i.receiverId, i.senderId, i.createdAt, i.guid ?? randomUUID())
+  const a = i.acceptance
+  const content =
+    a.result === 'refused'
+      ? el('СодИнфГП', { УИД_ТрН: i.uid, СодОпОтк: 'Отказ в приеме груза', ПричОтк: a.reason })
+      : el(
+          'СодИнфГП',
+          { УИД_ТрН: i.uid, СодОпПр: a.result === 'full' ? 'Груз принят' : 'Груз принят частично' },
+          el(
+            'ПриемГрузГП',
+            {
+              ФДатВрПриб: fmtDateTime(a.arrived),
+              НалКоорТочВрФПр: '0',
+              ФДатВрУбыт: fmtDateTime(a.departed),
+              НалКоорТочВрФУб: '0',
+              ЗаявДатВрПриб: fmtDateTime(a.arrived),
+              НалКоорТочВрЗПр: '0',
+              КолМестПриемЧ: a.places,
+              ОбщСвСост: a.discrepancies ? `Расхождения: ${a.discrepancies}` : 'Без расхождений',
+              МасБрутЗначПрием: fmtKg(a.grossKg),
+            },
+            el('АдрВыгруз', {}, el('АдресИнф', { КодСтр: '643', АдрТекст: a.unloadingAddress })),
+          ),
+        )
+  const doc = el(
+    'Документ',
+    { КНД: '1110341', ПоФактХЖ: 'Транспортная накладная', ДатИнфГП: fmtDate(i.createdAt), ВрИнфГП: fmtTime(i.createdAt), НаимЭконСубСост: i.consigneeName },
+    el('ИдИнфПрвПрием', { ИдФайлИнфПрвПрием: i.t2.fileId, ДатФайлПрвПрием: fmtDate(i.t2.createdAt), ВрФайлПрвПрием: fmtTime(i.t2.createdAt), ЭП: i.t2.signatureBase64 }),
+    content,
+    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+  )
+  return file('T3', id, doc)
+}
+
+export interface T4Input {
+  createdAt: Date
+  senderId: string
+  receiverId: string
+  /** Т3, после которого перевозчик закрывает накладную */
+  t3: PrevTitle
+  uid: string
+  signer: Person
+  guid?: string
+}
+
+/** Т4 — перевозчик о выдаче груза грузополучателю: закрывает документооборот. */
+export function buildT4(i: T4Input): TitleFile {
+  const id = fileId(TITLE_PREFIX.T4, i.receiverId, i.senderId, i.createdAt, i.guid ?? randomUUID())
+  const doc = el(
+    'Документ',
+    { КНД: '1110342', ПоФактХЖ: 'Транспортная накладная', ДатИнфПрвВыд: fmtDate(i.createdAt), ВрИнфПрвВыд: fmtTime(i.createdAt) },
+    el('ИдИнфГП', { ИдФайлИнфГП: i.t3.fileId, ДатФайлИнфГП: fmtDate(i.t3.createdAt), ВрФайлИнфГП: fmtTime(i.t3.createdAt), ЭП: i.t3.signatureBase64 }),
+    el('СодПрвВыд', { УИД_ТрН: i.uid, СодОпер: 'Груз выдан грузополучателю' }),
+    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+  )
+  return file('T4', id, doc)
+}

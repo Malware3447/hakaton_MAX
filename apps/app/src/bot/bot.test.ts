@@ -854,5 +854,41 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(Buffer.from(qr.file!.bytes.slice(1, 4)).toString()).toBe('PNG')
       expect(qr.text).toMatch(/Модель ГИС ЭПД/)
     })
+
+    it('до закрытия: выгрузка → получатель по ссылке → приёмка частично → Т3 и Т4 по схемам → «закрыта»', async () => {
+      // Получатель ОТГ-1057 («Прикамье») ещё не в боте — приглашение отправителю
+      await bot.consigneeArrival(id)
+      await act(started(902, `inv_${tokenIn(out.inbox.get(1)!.at(-1)!)}`))
+      expect(out.last?.text).toMatch(/Вы в перевозке как получатель/)
+
+      await act(press(801, 'trip'))
+      await act(press(801, payloadOf(out.last, 'Я на выгрузке')))
+      await act(pressIn(801, payloadOf(out.last, 'Груз сдан')))
+      const turn = out.inbox.get(902)!.at(-1)!
+      expect(turn.text).toMatch(/Сейчас ваш ход/)
+
+      await act(pressIn(902, payloadOf(turn, 'Принято частично')))
+      await act(ownPhone(902, '79270009020'))
+      await act(text(902, 'Не хватает 1 бочки 10W-40'))
+      expect(buttons(out.last)).toContain('Подписать накладную')
+
+      await act(pressIn(902, `sg:T3:${id}`))
+      const t3 = out.sentLog.filter((s) => s.userId === 902 && s.m.file).at(-1)!.m.file!
+      expect(t3.name).toMatch(/^ON_TRNACLGRPO_/)
+      expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
+      expect(decode1251(t3.bytes)).toMatch(/СодОпПр="Груз принят частично"[\s\S]*ОбщСвСост="Расхождения: Не хватает 1 бочки 10W-40"/)
+      await act(press(902, `sgd:T3:${id}`))
+      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
+
+      await act(press(3, `sg:T4:${id}`))
+      const t4 = out.sentLog.filter((s) => s.userId === 3 && s.m.file).at(-1)!.m.file!
+      expect(t4.name).toMatch(/^ON_TRNACLPVYN_/)
+      expect((await validateTitle('T4', t4.bytes)).errors).toEqual([])
+      expect(decode1251(t4.bytes)).toContain(`ИдФайлИнфГП="${t3.name.replace(/\.xml$/, '')}"`)
+      await act(press(3, `sgd:T4:${id}`))
+      expect(out.last?.text).toMatch(/Статус: закрыта/)
+      const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
+      expect(s!.state).toBe('closed')
+    })
   })
 })

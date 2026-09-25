@@ -84,8 +84,9 @@ function actionRows(cmd: CommandType, id: string): Button[][] {
     case 'carrier.signT2':
       return [[cb('Подписать накладную', `sg:T2:${id}`)]]
     case 'consignee.signT3':
+      return [[cb('Подписать накладную', `sg:T3:${id}`)]]
     case 'carrier.signT4':
-      return [[cb('Подписать накладную', P.stub(cmd))]]
+      return [[cb('Подписать накладную', `sg:T4:${id}`)]]
     case 'shipper.cancel':
       return [[cb('Отменить перевозку', `cx:${id}`)]]
     default:
