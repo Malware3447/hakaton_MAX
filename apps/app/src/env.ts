@@ -7,6 +7,8 @@ const EnvSchema = z
     MAX_WEBHOOK_SECRET: z.string().optional(),
     PUBLIC_URL: z.url().optional(),
     DATABASE_URL: z.string().optional(),
+    /** ключ API DaData: справочник организаций по ЕГРЮЛ; без него — только демо-данные и ручной ввод */
+    DADATA_API_KEY: z.string().optional(),
     PORT: z.coerce.number().int().positive().default(3000),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   })

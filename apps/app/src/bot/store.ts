@@ -108,7 +108,16 @@ export class BotStore {
   async addRole(input: {
     personId: string
     role: Role
-    org: { inn: string; kpp: string | null; name: string; address: string; verified: boolean; erpLinked: boolean } | null
+    org: {
+      inn: string
+      kpp: string | null
+      name: string
+      address: string
+      verified: boolean
+      erpLinked: boolean
+      source: 'demo' | 'dadata' | 'manual'
+      ogrn: string | null
+    } | null
     canSign: boolean
     poaNumber: string | null
     poaValidTo: Date | null
@@ -124,7 +133,16 @@ export class BotStore {
         } else {
           const [created] = await tx
             .insert(org)
-            .values({ inn: o.inn, kpp: o.kpp, name: o.name, address: o.address, verified: o.verified, erpKind: o.erpLinked ? 'mock' : null })
+            .values({
+              inn: o.inn,
+              kpp: o.kpp,
+              name: o.name,
+              address: o.address,
+              verified: o.verified,
+              erpKind: o.erpLinked ? 'mock' : null,
+              requisitesSource: o.source,
+              ogrn: o.ogrn,
+            })
             .returning({ id: org.id })
           orgId = created!.id
         }

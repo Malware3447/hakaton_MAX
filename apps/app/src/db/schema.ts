@@ -36,6 +36,9 @@ export const org = pgTable(
     address: text('address').notNull(),
     /** false — реквизиты введены руками, справочник их не нашёл */
     verified: boolean('verified').notNull().default(true),
+    /** откуда реквизиты: demo — демо-данные (модель), dadata — ЕГРЮЛ через DaData, manual — вручную */
+    requisitesSource: text('requisites_source').$type<'demo' | 'dadata' | 'manual'>(),
+    ogrn: text('ogrn'),
     erpKind: text('erp_kind').$type<'mock' | null>(),
     isDemo: boolean('is_demo').notNull().default(false),
     createdAt: createdAt(),

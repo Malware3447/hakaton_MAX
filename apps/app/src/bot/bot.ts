@@ -1,4 +1,4 @@
-import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OutMessage, type Role } from '@nk/domain'
+import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OrgRequisites, type OutMessage, type Role } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
@@ -22,7 +22,7 @@ interface FormCtx {
   role: Role
   history: Step[]
   inn?: string
-  req?: { inn: string; kpp: string | null; name: string; address: string }
+  req?: { inn: string; kpp: string | null; name: string; address: string; source: 'demo' | 'dadata' | 'manual'; ogrn: string | null; status?: OrgRequisites['status'] }
   verified?: boolean
   takenBy?: string
   canSign?: boolean
@@ -36,6 +36,13 @@ interface FormCtx {
 
 
 const FORM = 'form'
+const STATUS_TEXT: Record<NonNullable<OrgRequisites['status']>, string> = {
+  active: 'действует',
+  liquidating: 'в процессе ликвидации',
+  liquidated: 'ликвидирована',
+  bankrupt: 'в процедуре банкротства',
+  reorganizing: 'в процессе реорганизации',
+}
 const TEXT_STEPS: Step[] = ['inn', 'manual_name', 'manual_address', 'poa_number', 'poa_date']
 const nav = [cb('Назад', P.back), cb('В меню', P.toMenu)]
 
@@ -260,8 +267,10 @@ export class Bot {
         }
       case 'confirm': {
         const r = ctx.req!
+        const from = r.source === 'dadata' ? 'Нашли в ЕГРЮЛ (через DaData):' : r.source === 'demo' ? 'Нашли в демо-данных (модель):' : 'Нашли у нас:'
+        const warn = r.status && r.status !== 'active' ? ['', `⚠️ По данным ЕГРЮЛ компания ${STATUS_TEXT[r.status]}.`] : []
         return {
-          text: t('Нашли в справочнике:', '', `<b>${esc(r.name)}</b>`, `ИНН ${r.inn}${r.kpp ? `, КПП ${r.kpp}` : ''}`, esc(r.address), '', 'Это вы?'),
+          text: t(from, '', `<b>${esc(r.name)}</b>`, `ИНН ${r.inn}${r.kpp ? `, КПП ${r.kpp}` : ''}${r.ogrn ? `, ОГРН ${r.ogrn}` : ''}`, esc(r.address || 'адрес не указан'), ...warn, '', 'Это вы?'),
           buttons: [[cb('Да, это мы', P.yes), cb('Нет', P.no)], nav],
         }
       }
@@ -312,7 +321,7 @@ export class Bot {
     await this.store.addRole({
       personId: p.id,
       role: ctx.role,
-      org: { ...req, verified: ctx.verified ?? true, erpLinked },
+      org: { inn: req.inn, kpp: req.kpp, name: req.name, address: req.address, verified: ctx.verified ?? true, erpLinked, source: req.source, ogrn: req.ogrn },
       canSign: ctx.canSign ?? false,
       poaNumber: ctx.poaNumber ?? null,
       poaValidTo: ctx.poaValidTo ? new Date(ctx.poaValidTo) : null,
@@ -335,13 +344,21 @@ export class Bot {
         const existing = await this.store.orgByInn(inn)
         const holder = existing ? await this.store.roleHolder(existing.id, ctx.role) : null
         if (holder) return this.goto(p, { ...ctx, inn, takenBy: holder }, 'taken', to, 'inn')
-        const found = existing ?? (await this.directory.findByInn(inn))
-        if (found) return this.goto(p, { ...ctx, inn, req: { inn, kpp: found.kpp, name: found.name, address: found.address }, verified: existing?.verified ?? true }, 'confirm', to, 'inn')
+        if (existing) {
+          const req = { inn, kpp: existing.kpp, name: existing.name, address: existing.address, source: existing.requisitesSource ?? 'demo', ogrn: existing.ogrn }
+          return this.goto(p, { ...ctx, inn, req, verified: existing.verified }, 'confirm', to, 'inn')
+        }
+        const found = await this.directory.findByInn(inn)
+        if (found?.status === 'liquidated') return this.goto(p, ctx, 'inn', to, null, `Компания с ИНН ${inn} ликвидирована по данным ЕГРЮЛ — подключить её нельзя.`)
+        if (found) {
+          const req = { inn, kpp: found.kpp, name: found.name, address: found.address, source: found.source ?? 'demo', ogrn: found.ogrn ?? null, status: found.status }
+          return this.goto(p, { ...ctx, inn, req, verified: true }, 'confirm', to, 'inn')
+        }
         return this.goto(p, { ...ctx, inn }, 'manual_name', to, 'inn')
       }
       case 'manual_name':
         if (text.length < 3) return this.goto(p, ctx, step, to, null, 'Слишком коротко.')
-        return this.goto(p, { ...ctx, req: { inn: ctx.inn!, kpp: null, name: text, address: '' } }, 'manual_address', to, step)
+        return this.goto(p, { ...ctx, req: { inn: ctx.inn!, kpp: null, name: text, address: '', source: 'manual', ogrn: null } }, 'manual_address', to, step)
       case 'manual_address': {
         if (text.length < 10) return this.goto(p, ctx, step, to, null, 'Нужен полный адрес с индексом.')
         const next = this.afterOrg({ ...ctx, req: { ...ctx.req!, address: text }, verified: false })

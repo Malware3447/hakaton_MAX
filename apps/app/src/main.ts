@@ -1,4 +1,5 @@
 import { MockDirectory } from './adapters/mock-directory.ts'
+import { ChainDirectory, DadataDirectory } from './adapters/dadata-directory.ts'
 import { MockErp } from './adapters/mock-erp.ts'
 import { buildApp, type AppDeps } from './app.ts'
 import { Bot } from './bot/bot.ts'
@@ -31,7 +32,11 @@ if (env.DATABASE_URL) {
     const api = new MaxApi(env.MAX_BOT_TOKEN)
     const messenger = new MaxMessenger(api)
     const me = await api.getMe()
-    const directory = new MockDirectory(db)
+    // Справочник организаций: сначала демо-данные сценария, потом ЕГРЮЛ через DaData (если есть ключ)
+    const directory = env.DADATA_API_KEY
+      ? new ChainDirectory([new MockDirectory(db), new DadataDirectory(env.DADATA_API_KEY, app.log)])
+      : new MockDirectory(db)
+    if (!env.DADATA_API_KEY) app.log.warn('DADATA_API_KEY не задан — справочник знает только демо-организации')
     const erp = new MockErp(db)
 
     // Очередь заданий: уведомления участникам и последствия переходов (учётка, оператор, QR)

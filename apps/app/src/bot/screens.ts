@@ -141,7 +141,10 @@ export function companyScreen(r: RoleInfo): OutMessage {
   const lines = [`<b>${esc(roleLabel(r))}</b>`, '']
   if (o) {
     lines.push(esc(o.name), `ИНН ${o.inn}${o.kpp ? `, КПП ${o.kpp}` : ''}`, esc(o.address))
+    if (o.ogrn) lines.push(`ОГРН ${o.ogrn}`)
     if (!o.verified) lines.push('<i>Реквизиты введены вручную и не проверены по справочнику.</i>')
+    else if (o.requisitesSource === 'dadata') lines.push('<i>Реквизиты по данным ЕГРЮЛ (через DaData).</i>')
+    else if (o.requisitesSource === 'demo') lines.push('<i>Демо-организация: реквизиты вымышленные (модель).</i>')
     if (r.role === 'shipper') lines.push('', `Учётная система: ${o.erpKind ? 'подключена (модель)' : 'не подключена'}`)
   }
   lines.push('', r.isAdmin ? 'Вы администратор компании в этой роли.' : 'Вы сотрудник компании в этой роли.')

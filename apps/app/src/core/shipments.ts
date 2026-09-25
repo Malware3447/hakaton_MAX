@@ -130,8 +130,8 @@ export class ShipmentService {
       .insert(org)
       .values(
         found
-          ? { inn, kpp: found.kpp, name: found.name, address: found.address, verified: true }
-          : { inn, name: fallbackName, address: '', verified: false },
+          ? { inn, kpp: found.kpp, name: found.name, address: found.address, verified: true, requisitesSource: found.source ?? 'demo', ogrn: found.ogrn ?? null }
+          : { inn, name: fallbackName, address: '', verified: false, requisitesSource: 'manual' as const },
       )
       .onConflictDoNothing()
     const [row] = await this.db.select({ id: org.id }).from(org).where(eq(org.inn, inn))

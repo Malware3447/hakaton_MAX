@@ -41,9 +41,14 @@ export interface OrgRequisites {
   kpp: string | null
   name: string
   address: string
+  /** откуда реквизиты: демо-данные (модель) или ЕГРЮЛ через DaData */
+  source?: 'demo' | 'dadata'
+  ogrn?: string | null
+  /** статус в ЕГРЮЛ; у демо-данных всегда active */
+  status?: 'active' | 'liquidating' | 'liquidated' | 'bankrupt' | 'reorganizing'
 }
 
-/** Реализации: MockDirectory (mock.org_registry); на пилоте — ЕГРЮЛ или DaData. */
+/** Реализации: MockDirectory (демо-данные), DadataDirectory (ЕГРЮЛ через DaData), ChainDirectory — по очереди. */
 export interface OrgDirectory {
   /** null — не нашли; тогда бот предлагает ввести реквизиты руками с пометкой «не проверено» */
   findByInn(inn: string): Promise<OrgRequisites | null>

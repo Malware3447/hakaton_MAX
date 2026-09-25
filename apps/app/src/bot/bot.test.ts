@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { MockDirectory } from '../adapters/mock-directory.ts'
+import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
 import { participant } from '../db/schema.ts'
@@ -117,7 +118,17 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
   beforeAll(async () => {
     conn = await openDb(url!)
     await resetDemo(conn.db, await readSeed())
-    const directory = new MockDirectory(conn.db)
+    // Справочник как в работе: демо-данные, потом «DaData» (здесь подделка на двух ИНН)
+    const directory = new ChainDirectory([
+      new MockDirectory(conn.db),
+      {
+        async findByInn(inn: string) {
+          if (inn === '7725000018') return { inn, kpp: '772501001', name: 'ООО «Настоящая»', address: '115000, г Москва, ул Реальная, д 1', source: 'dadata' as const, ogrn: '1027700000001', status: 'active' as const }
+          if (inn === '5002000020') return { inn, kpp: null, name: 'ООО «Закрытая»', address: '', source: 'dadata' as const, ogrn: null, status: 'liquidated' as const }
+          return null
+        },
+      },
+    ])
     bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
@@ -542,6 +553,30 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(600, 'own:own'))
       await act(press(600, 'adr:self'))
       expect(out.last?.text).toMatch(/Вы уже водитель другого перевозчика: ООО «ГрузЛайн-Казань»/)
+    })
+  })
+
+  describe('справочник: демо-данные и DaData', () => {
+    it('реальная компания находится через DaData, источник виден и в карточке компании', async () => {
+      await act(press(700, 'add:consignee'))
+      await act(text(700, '7725000018'))
+      expect(out.last?.text).toMatch(/Нашли в ЕГРЮЛ \(через DaData\)[\s\S]*ООО «Настоящая»[\s\S]*ОГРН 1027700000001/)
+      await act(press(700, 'f:yes'))
+      await act(press(700, 'f:accept_only'))
+      await act(press(700, 'company'))
+      expect(out.last?.text).toMatch(/ОГРН 1027700000001[\s\S]*по данным ЕГРЮЛ \(через DaData\)/)
+    })
+
+    it('демо-организация помечена как модель', async () => {
+      await act(press(1, 'open:shipper'))
+      await act(press(1, 'company'))
+      expect(out.last?.text).toMatch(/Демо-организация: реквизиты вымышленные \(модель\)/)
+    })
+
+    it('ликвидированную компанию подключить нельзя', async () => {
+      await act(press(701, 'add:carrier'))
+      await act(text(701, '5002000020'))
+      expect(out.last?.text).toMatch(/ликвидирована по данным ЕГРЮЛ — подключить её нельзя/)
     })
   })
 })
