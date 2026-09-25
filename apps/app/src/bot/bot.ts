@@ -5,6 +5,7 @@ import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
 import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 import type { ShipmentService } from '../core/shipments.ts'
+import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
@@ -22,6 +23,10 @@ interface FormCtx {
   canSign?: boolean
   poaNumber?: string | null
   poaValidTo?: string | null
+  /** анкета начата по приглашению: после неё принимаем приглашение */
+  invite?: string
+  /** что показать над первым шагом: превью перевозки из приглашения */
+  intro?: string
 }
 
 
@@ -46,17 +51,32 @@ export class Bot {
     private readonly messenger: Messenger,
     private readonly directory: OrgDirectory,
     shipments: ShipmentService,
+    invites: InviteService,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
   ) {
-    this.flows = new ShipmentFlows(store, shipments, messenger, { reply: (to, m, n) => this.reply(to, m, n), notify: (to, t) => this.notify(to, t) }, botUsername, log)
+    this.flows = new ShipmentFlows(
+      store,
+      shipments,
+      invites,
+      messenger,
+      {
+        reply: (to, m, n) => this.reply(to, m, n),
+        notify: (to, t) => this.notify(to, t),
+        startForm: (p, role, to, opts) => this.startForm(p, role, to, opts),
+      },
+      botUsername,
+      log,
+    )
   }
 
   async handle(u: MaxUpdate): Promise<void> {
     if (u.update_type === 'bot_started' && 'user' in u) {
       const p = await this.store.upsertPerson(u.user.user_id, fullName(u.user))
       await this.store.clearDialog(p.id)
-      return this.showStart(p, { kind: 'message', userId: u.user.user_id })
+      const to: Reply = { kind: 'message', userId: u.user.user_id }
+      if (u.payload?.startsWith('inv_')) return this.flows.onInvite(p, u.payload.slice(4), to)
+      return this.showStart(p, to)
     }
     if (u.update_type === 'message_created' && 'message' in u) {
       const m = u.message
@@ -117,6 +137,8 @@ export class Bot {
   private async onText(p: PersonRow, text: string, to: Reply) {
     if (text === '/start' || text.startsWith('/start ')) {
       await this.store.clearDialog(p.id)
+      const arg = text.slice('/start'.length).trim()
+      if (arg.startsWith('inv_')) return this.flows.onInvite(p, arg.slice(4), to)
       return this.showStart(p, to)
     }
     if (text === '/menu') return this.showRoot(p, to)
@@ -175,7 +197,8 @@ export class Bot {
 
   // ---------- анкета роли ----------
 
-  private async startForm(p: PersonRow, role: Role, to: Reply) {
+  private async startForm(p: PersonRow, role: Role, to: Reply, opts?: { invite: string; intro: string }) {
+    if (opts) return this.goto(p, { role, history: [], invite: opts.invite, intro: opts.intro }, 'inn', to, null)
     const roles = await this.store.roles(p.id)
     if (roles.some((r) => r.role === role)) return this.showRole(p, role, to)
     if (role === 'driver') {
@@ -198,7 +221,10 @@ export class Bot {
     const t = (...lines: string[]) => [title, '', ...lines].join('\n') + err
     switch (step) {
       case 'inn':
-        return { text: t('Пришлите ИНН вашей компании — 10 цифр, у ИП 12.'), buttons: [nav] }
+        return {
+          text: (ctx.intro && ctx.history.length === 0 ? `${ctx.intro}\n\n` : '') + t('Пришлите ИНН вашей компании — 10 цифр, у ИП 12.'),
+          buttons: [nav],
+        }
       case 'confirm': {
         const r = ctx.req!
         return {
@@ -259,6 +285,7 @@ export class Bot {
       poaValidTo: ctx.poaValidTo ? new Date(ctx.poaValidTo) : null,
     })
     await this.store.clearDialog(p.id)
+    if (ctx.invite) return this.flows.acceptAfterForm({ ...p, activeRole: ctx.role }, ctx.invite, to)
     return this.showRole({ ...p, activeRole: ctx.role }, ctx.role, to, `Готово: роль «${ROLE_TITLE[ctx.role].toLowerCase()}» добавлена.`)
   }
 
@@ -318,7 +345,7 @@ export class Bot {
         break
       case P.no:
       case P.otherInn:
-        if (step === 'confirm' || step === 'taken') return this.goto(p, { role: ctx.role, history: [] }, 'inn', to, null)
+        if (step === 'confirm' || step === 'taken') return this.goto(p, { role: ctx.role, history: [], invite: ctx.invite }, 'inn', to, null)
         break
       case P.later:
         if (step === 'poa_number') return this.afterPoa(p, { ...ctx, poaNumber: null, poaValidTo: null }, step, to)

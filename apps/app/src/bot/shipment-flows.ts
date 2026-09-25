@@ -1,11 +1,13 @@
 import { TRANSITIONS, type Command, type CommandType, type Messenger, type OutMessage, type Role } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
 import type { ExecResult, ShipmentService } from '../core/shipments.ts'
+import type { InviteService } from '../core/invite-service.ts'
 import { inviteLink, sha256 } from '../core/invites.ts'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment } from '../max/types.ts'
 import { S, cb } from './screens.ts'
-import { shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
+import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
+import { ROLE_TITLE } from './screens.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 
 // Действия с перевозками в чате: HAKATON-24 (ядро), HAKATON-29 (шаги), HAKATON-44 (назначение по контакту).
@@ -15,6 +17,8 @@ export type Reply = { kind: 'callback'; callbackId: string } | { kind: 'message'
 export interface Ui {
   reply(to: Reply, msg: OutMessage, notification?: string | null): Promise<void>
   notify(to: Reply, text: string): Promise<void>
+  /** начать анкету роли; после неё бот вызовет acceptAfterForm с invite */
+  startForm(p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }): Promise<void>
 }
 
 /** Команды без данных — выполняются прямо с кнопки. */
@@ -44,6 +48,7 @@ export class ShipmentFlows {
   constructor(
     private readonly store: BotStore,
     private readonly shipments: ShipmentService,
+    private readonly invites: InviteService,
     private readonly messenger: Messenger,
     private readonly ui: Ui,
     private readonly botUsername: string,
@@ -103,6 +108,22 @@ export class ShipmentFlows {
         const reason = DECLINE_REASONS[Number(arg)]
         if (d?.step !== 'await:decline_reason' || !reason) return false
         await this.decline(p, d, reason, to)
+        return true
+      }
+      case 'rq':
+        await this.requestNewLink(p, arg, to)
+        return true
+      case 'ri': {
+        const [id, role] = [rest[0]!, rest[1] as Role]
+        const token = await this.invites.reissue(id, role, p.id)
+        if (!token) {
+          await this.ui.notify(to, 'По этому приглашению уже вошли, или оно не ваше')
+          return true
+        }
+        await this.ui.reply(to, {
+          text: `Новая ссылка для роли «${ROLE_TITLE[role].toLowerCase()}». Перешлите её человеку, она действует 7 дней:\n${inviteLink(this.botUsername, token)}`,
+          buttons: [[cb('Открыть перевозку', S.view(id))]],
+        })
         return true
       }
       case 'wl': {
@@ -176,12 +197,107 @@ export class ShipmentFlows {
       ? [
           `${esc(name)} ещё не пользуется ботом. Перешлите ему приглашение:`,
           inviteLink(this.botUsername, invite.token),
-          '<i>Вход по приглашению появится в следующей версии.</i>',
         ].join('\n')
       : `Заявка отправлена: ${esc(name)}.`
     await this.showCard(p, shipmentId, to, note)
     await this.afterTransition(res, p.id)
     return true
+  }
+
+  // ---------- вход по приглашению (HAKATON-27) ----------
+
+  /** Человек открыл ссылку https://max.ru/<бот>?start=inv_<токен>. */
+  async onInvite(p: PersonRow, token: string, to: Reply) {
+    const found = await this.invites.lookup(token)
+    const menu = [[cb('В меню', 'root')]]
+    if (found.kind === 'not_found') {
+      return this.ui.reply(to, { text: 'Приглашение не найдено. Попросите того, кто вас звал, прислать ссылку ещё раз.', buttons: menu })
+    }
+    if (found.kind === 'taken') {
+      if (found.invite.personId === p.id) return this.showCard(p, found.invite.shipmentId, to)
+      return this.ui.reply(to, { text: 'По этому приглашению уже вошёл другой человек. Если это ошибка, попросите новое приглашение.', buttons: menu })
+    }
+    if (found.kind === 'expired') {
+      return this.ui.reply(to, {
+        text: 'Срок приглашения истёк: ссылка действует 7 дней.',
+        buttons: [[cb('Попросить новую ссылку', `rq:${found.invite.id}`)], ...menu],
+      })
+    }
+
+    const { invite, shipment } = found
+    const role = invite.role
+    const roles = await this.store.roles(p.id)
+    const mine = roles.find((r) => r.role === role)
+    const conflict = () =>
+      this.ui.reply(to, {
+        text: `Вы уже работаете в роли «${ROLE_TITLE[role].toLowerCase()}» от другой компании: ${esc(mine?.org?.name ?? '')}. Одна роль — одна компания, поэтому принять это приглашение нельзя.`,
+        buttons: menu,
+      })
+
+    switch (role) {
+      case 'carrier': {
+        if (mine?.org) return this.acceptInvite(p, invite.id, mine.org.id, to)
+        const view = await this.shipments.view(shipment.id, role)
+        return this.ui.startForm(p, 'carrier', to, {
+          invite: invite.id,
+          intro: `${view ? invitePreview(view, role) : ''}\n\nЧтобы ответить, подключите вашу компанию — это один раз.`,
+        })
+      }
+      case 'consignee':
+        if (mine && mine.org?.id !== shipment.consigneeOrgId) return conflict()
+        if (!mine) await this.store.addRoleForOrg(p.id, 'consignee', shipment.consigneeOrgId, false)
+        return this.acceptInvite(p, invite.id, shipment.consigneeOrgId, to)
+      case 'driver':
+        if (mine?.org && shipment.carrierOrgId && mine.org.id !== shipment.carrierOrgId) return conflict()
+        if (!mine && shipment.carrierOrgId) await this.store.addRoleForOrg(p.id, 'driver', shipment.carrierOrgId, false)
+        else if (mine && !mine.org && shipment.carrierOrgId) await this.store.setRoleOrg(p.id, 'driver', shipment.carrierOrgId)
+        return this.acceptInvite(p, invite.id, shipment.carrierOrgId, to)
+      default:
+        return this.ui.reply(to, { text: 'Такие приглашения пока не поддерживаются.', buttons: menu })
+    }
+  }
+
+  /** Анкета перевозчика по приглашению пройдена — принимаем приглашение от его компании. */
+  async acceptAfterForm(p: PersonRow, participantId: string, to: Reply) {
+    const r = (await this.store.roles(p.id)).find((x) => x.role === 'carrier')
+    if (!r?.org) return this.ui.notify(to, 'Не удалось подключить компанию')
+    return this.acceptInvite(p, participantId, r.org.id, to)
+  }
+
+  private async acceptInvite(p: PersonRow, participantId: string, orgId: string | null, to: Reply) {
+    const res = await this.invites.accept(participantId, p.id, orgId)
+    if (!res.ok) {
+      const text = {
+        taken: 'По этому приглашению уже вошёл другой человек.',
+        expired: 'Срок приглашения истёк — попросите новую ссылку.',
+        not_found: 'Приглашение не найдено.',
+        org_conflict: 'Приглашение от другой компании, чем та, в которой вы работаете в этой роли.',
+      }[res.reason]
+      return this.ui.reply(to, { text, buttons: [[cb('В меню', 'root')]] })
+    }
+    await this.store.setActiveRole(p.id, res.role)
+    await this.showCard({ ...p, activeRole: res.role }, res.shipmentId, to, `Вы в перевозке как ${ROLE_TITLE[res.role].toLowerCase()}.`)
+
+    if (res.inviter) {
+      const view = await this.shipments.view(res.shipmentId, 'shipper')
+      const lines = [`✅ ${esc(p.name)} принял приглашение в перевозку ${esc(view?.erpRef ?? '')} как ${ROLE_TITLE[res.role].toLowerCase()}.`]
+      if (res.mismatch) lines.push('', `⚠️ Это не тот человек, чей контакт вы присылали. Если его не ждали — напишите нам, отвяжем.`)
+      await this.messenger
+        .send(res.inviter.maxUserId, { text: lines.join('\n'), buttons: [[cb('Открыть', S.view(res.shipmentId))]] })
+        .catch((err) => this.log.warn({ err }, 'не удалось написать пригласившему'))
+    }
+  }
+
+  private async requestNewLink(p: PersonRow, participantId: string, to: Reply) {
+    const inv = await this.invites.inviterOf(participantId)
+    if (!inv) return this.ui.notify(to, 'Не нашли, кто вас приглашал')
+    await this.messenger
+      .send(inv.maxUserId, {
+        text: `${esc(p.name)} просит новую ссылку на перевозку ${esc(inv.erpRef)}: старая истекла.`,
+        buttons: [[cb('Выдать новую ссылку', `ri:${inv.shipmentId}:${inv.role}`)]],
+      })
+      .catch((err) => this.log.warn({ err }, 'не удалось написать пригласившему'))
+    return this.ui.reply(to, { text: 'Попросили новую ссылку у того, кто вас приглашал. Когда он её пришлёт — откройте.', buttons: [[cb('В меню', 'root')]] })
   }
 
   // ---------- экраны ----------

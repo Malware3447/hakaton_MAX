@@ -127,3 +127,16 @@ export function shipmentList(title: string, items: { shipmentId: string; erpRef:
 
 export const waitingList = (items: WaitingItem[], role: Role) =>
   shipmentList('Ждут вашего действия', items, role, 'Сейчас ничего не ждёт вас.')
+
+const ROLE_INVITE: Record<Role, string> = {
+  shipper: 'Вас приглашают в перевозку как отправителя',
+  carrier: 'Вам предлагают перевезти груз',
+  driver: 'Вас назначили водителем на рейс',
+  consignee: 'К вам едет груз',
+}
+
+/** Что человек видит по ссылке-приглашению до того, как что-то нажать. */
+export function invitePreview(v: ShipmentView, role: Role): string {
+  const card = shipmentCard({ ...v, actions: [] }).text
+  return [`<b>${ROLE_INVITE[role]}</b>`, '', card].join('\n')
+}

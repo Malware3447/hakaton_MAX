@@ -1,6 +1,7 @@
 import { MockDirectory } from './adapters/mock-directory.ts'
 import { MockErp } from './adapters/mock-erp.ts'
 import { ShipmentService } from './core/shipments.ts'
+import { InviteService } from './core/invite-service.ts'
 import { buildApp, type AppDeps } from './app.ts'
 import { Bot } from './bot/bot.ts'
 import { BotStore } from './bot/store.ts'
@@ -27,7 +28,7 @@ if (env.DATABASE_URL) {
     const me = await api.getMe()
     const directory = new MockDirectory(db)
     const shipments = new ShipmentService(db, new MockErp(db), directory)
-    const bot = new Bot(new BotStore(db), new MaxMessenger(api), directory, shipments, me.username, app.log)
+    const bot = new Bot(new BotStore(db), new MaxMessenger(api), directory, shipments, new InviteService(db), me.username, app.log)
     await api
       .setCommands([
         { name: 'menu', description: 'Меню ролей' },

@@ -138,6 +138,26 @@ export class BotStore {
     })
   }
 
+  /** Роль в уже известной организации (по приглашению): организация из перевозки, ИНН не спрашиваем. */
+  async addRoleForOrg(personId: string, role: Role, orgId: string, canSign: boolean) {
+    await this.db.transaction(async (tx) => {
+      const [holder] = await tx
+        .select({ id: membership.id })
+        .from(membership)
+        .where(and(eq(membership.orgId, orgId), eq(membership.role, role)))
+        .limit(1)
+      await tx.insert(membership).values({ personId, role, orgId, isAdmin: !holder, canSign })
+    })
+  }
+
+  /** Водителю без перевозчика — организация перевозчика, который его позвал. */
+  async setRoleOrg(personId: string, role: Role, orgId: string) {
+    await this.db
+      .update(membership)
+      .set({ orgId })
+      .where(and(eq(membership.personId, personId), eq(membership.role, role), sql`${membership.orgId} is null`))
+  }
+
   async erpShipmentCount(shipperInn: string): Promise<number> {
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
