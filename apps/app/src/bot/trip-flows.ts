@@ -56,6 +56,7 @@ export class TripFlows {
           return this.step(p, 'await:vehicle_owner', ctx, to)
         })
       case 'adr':
+        if (arg === 'self') return this.withDialog(p, 'await:driver', to, (d) => this.selfDriver(p, d.context, to))
         return this.withDialog(p, 'await:driver', to, (d) => this.assign(p, d.context, { personId: arg }, to))
       case 'cl':
         await this.loadingButton(p, rest[0] === 'ok' ? 'ok' : 'remarks', rest[1]!, to)
@@ -186,9 +187,34 @@ export class TripFlows {
     const drivers = org ? await this.fleet.drivers(org.id) : []
     await this.store.setDialog(p.id, { step: 'await:driver', context: ctx })
     await this.ui.reply(to, {
-      text: ['<b>Водитель на рейс</b>', '', 'Перешлите сюда контакт водителя: скрепка → «Контакт».', drivers.length ? 'Или выберите из своих водителей:' : ''].join('\n').trim(),
-      buttons: [...drivers.slice(0, 10).map((d) => [cb(d.name, `adr:${d.personId}`)]), [cb('Отмена', S.view(String(ctx.shipmentId)))]],
+      text: [
+        '<b>Водитель на рейс</b>',
+        '',
+        'Перешлите сюда контакт водителя: скрепка → «Контакт».',
+        drivers.length ? 'Или выберите из своих водителей. Если поедете сами — «Я сам за рулём».' : 'Если поедете сами — «Я сам за рулём».',
+      ].join('\n'),
+      buttons: [
+        [cb('Я сам за рулём', 'adr:self')],
+        ...drivers.filter((d) => d.personId !== p.id).slice(0, 10).map((d) => [cb(d.name, `adr:${d.personId}`)]),
+        [cb('Отмена', S.view(String(ctx.shipmentId)))],
+      ],
     })
+  }
+
+  /** Перевозчик сам за рулём: переслать свой контакт в MAX нельзя, поэтому отдельная кнопка. */
+  private async selfDriver(p: PersonRow, ctx: Ctx, to: Reply) {
+    const org = await this.carrierOrg(p)
+    if (!org) return this.ui.notify(to, 'Сначала подключите компанию-перевозчика')
+    const role = (await this.store.roles(p.id)).find((r) => r.role === 'driver')
+    if (role?.org && role.org.id !== org.id) {
+      return this.ui.reply(to, {
+        text: `Вы уже водитель другого перевозчика: ${esc(role.org.name)}. Одна роль — одна компания, поэтому назначить вас нельзя.`,
+        buttons: [[cb('Отмена', S.view(String(ctx.shipmentId)))]],
+      })
+    }
+    if (!role) await this.store.addRoleForOrg(p.id, 'driver', org.id, false)
+    else if (!role.org) await this.store.setRoleOrg(p.id, 'driver', org.id)
+    return this.assign(p, ctx, { personId: p.id }, to)
   }
 
   private async driverContact(p: PersonRow, d: DialogState, a: MaxAttachment, to: Reply) {
