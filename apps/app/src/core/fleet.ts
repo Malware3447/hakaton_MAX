@@ -17,10 +17,18 @@ export class FleetService {
   async upsertVehicle(orgId: string, v: VehicleInput): Promise<string> {
     const [row] = await this.db
       .insert(vehicle)
-      .values({ orgId, plate: v.plate, brand: v.brand, ownership: v.ownership, ownerName: v.ownerName })
-      .onConflictDoUpdate({ target: [vehicle.orgId, vehicle.plate], set: { brand: v.brand, ownership: v.ownership, ownerName: v.ownerName } })
+      .values({ orgId, ...v })
+      .onConflictDoUpdate({
+        target: [vehicle.orgId, vehicle.plate],
+        set: { brand: v.brand, ownership: v.ownership, ownerName: v.ownerName, bodyType: v.bodyType, capacityT: v.capacityT, volumeM3: v.volumeM3 },
+      })
       .returning({ id: vehicle.id })
     return row!.id
+  }
+
+  async get(id: string) {
+    const [row] = await this.db.select().from(vehicle).where(eq(vehicle.id, id))
+    return row ?? null
   }
 
   drivers(orgId: string) {

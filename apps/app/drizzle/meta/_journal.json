@@ -15,6 +15,13 @@
       "when": 1790342240241,
       "tag": "0001_org_requisites_source",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790349794818,
+      "tag": "0002_phone_vehicle_contact",
+      "breakpoints": true
     }
   ]
 }

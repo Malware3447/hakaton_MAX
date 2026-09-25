@@ -11,7 +11,7 @@ export class MockErp implements ErpAdapter {
     return {
       ref: r.ref,
       shipperInn: r.shipperInn,
-      consignee: { inn: r.consigneeInn, name: r.consigneeName },
+      consignee: { inn: r.consigneeInn, name: r.consigneeName, contactName: r.consigneeContactName, phone: r.consigneePhone },
       loadingAddress: r.loadingAddress,
       unloadingAddress: r.unloadingAddress,
       plannedLoadingAt: r.plannedLoadingAt?.toISOString() ?? null,

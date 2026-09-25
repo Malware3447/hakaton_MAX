@@ -11,7 +11,7 @@ import type { Role, SignatureKind, TitleKind, VehicleOwnership } from './enums.t
 export interface ErpShipment {
   ref: string // номер отгрузки: ОТГ-2026-1040
   shipperInn: string
-  consignee: { inn: string; name: string }
+  consignee: { inn: string; name: string; contactName?: string | null; phone?: string | null }
   loadingAddress: string
   unloadingAddress: string
   plannedLoadingAt: string | null
@@ -139,6 +139,9 @@ export interface VehicleInput {
   brand: string
   ownership: VehicleOwnership
   ownerName: string | null // владелец при аренде и лизинге
+  bodyType: string | null
+  capacityT: number | null
+  volumeM3: number | null
 }
 
 /** Результат поиска по пересланному контакту. Найти можно только того, кто запускал бота. */

@@ -99,6 +99,7 @@ export class ShipmentService {
           loadingAddress: src.loadingAddress,
           unloadingAddress: src.unloadingAddress,
           plannedLoadingAt: src.plannedLoadingAt ? new Date(src.plannedLoadingAt) : null,
+          consigneeContact: { name: src.consignee.contactName ?? null, phone: src.consignee.phone ?? null },
           cargo: { lines: src.lines, places: src.places, grossKg: src.grossKg },
           state: 'draft',
           turn: 'shipper',

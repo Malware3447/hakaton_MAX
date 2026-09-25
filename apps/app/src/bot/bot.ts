@@ -195,7 +195,7 @@ export class Bot {
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
     // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
-    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:'].some((x) => payload.startsWith(x))
+    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:'].some((x) => payload.startsWith(x))
     if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
     if (await this.trips.onButton(p, payload, to)) return

@@ -7,7 +7,7 @@ import { MockDirectory } from '../adapters/mock-directory.ts'
 import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
-import { participant, person, shipment } from '../db/schema.ts'
+import { participant, person, shipment, vehicle } from '../db/schema.ts'
 import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
@@ -243,7 +243,10 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
     it('перевозчик принимает — отправителю приходит «принял», двойное нажатие безвредно', async () => {
       const offer = out.inbox.get(3)!.at(-1)!
-      await act(press(3, payloadOf(offer, 'Принять')))
+      await act(pressIn(3, payloadOf(offer, 'Принять')))
+      // Решение 25.09: телефон перевозчика нужен уже в Т1 — спрашиваем при первом «Принять заявку»
+      expect(out.last?.text).toMatch(/Подтвердите номер телефона[\s\S]*записывается в транспортную накладную/)
+      await act(ownPhone(3, '79170001122'))
       expect(out.last?.text).toMatch(/перевозчик назначает машину и водителя/)
       expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/принял заявку ОТГ-2026-1040/)
       await act(press(3, payloadOf(offer, 'Принять')))
@@ -350,6 +353,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Не похоже на госномер/)
       await act(text(3, 'a245km116'))
       await act(text(3, 'КАМАЗ 65115'))
+      await act(press(3, 'vb:0'))
+      await act(text(3, '15'))
+      await act(text(3, '30'))
       await act(press(3, 'own:own'))
       expect(out.last?.text).toMatch(/Водитель на рейс/)
       await act(contact(3, { user_id: 4, first_name: 'Иван' }))
@@ -391,6 +397,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(3, 'nvh'))
       await act(text(3, 'В123ОР116'))
       await act(text(3, 'МАЗ 5440'))
+      await act(press(3, 'vb:0'))
+      await act(text(3, '15'))
+      await act(text(3, '30'))
       await act(press(3, 'own:lease'))
       await act(text(3, 'ООО «Лизинг-Центр»'))
       await act(contact(3, { user_id: 600, first_name: 'Пётр' }))
@@ -426,6 +435,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(3, 'nvh'))
       await act(text(3, 'Е777КХ116'))
       await act(text(3, 'ГАЗон Next'))
+      await act(press(3, 'vb:0'))
+      await act(text(3, '15'))
+      await act(text(3, '30'))
       await act(press(3, 'own:own'))
       const before = out.inbox.get(3)!.length
       await act(contact(3, { user_id: 3, first_name: 'Олег' }))
@@ -511,11 +523,15 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(500, 'open:carrier'))
       await act(press(500, 'tl:carrier'))
       await act(press(500, payloadOf(out.last, 'ОТГ-2026-1044')))
-      await act(press(500, payloadOf(out.last, 'Принять заявку')))
+      await act(pressIn(500, payloadOf(out.last, 'Принять заявку')))
+      await act(ownPhone(500, '79170005000'))
       await act(press(500, payloadOf(out.last, 'Назначить машину')))
       await act(press(500, 'nvh'))
       await act(text(500, 'К001КК116'))
       await act(text(500, 'Volvo FH'))
+      await act(press(500, 'vb:0'))
+      await act(text(500, '15'))
+      await act(text(500, '30'))
       await act(press(500, 'own:rent'))
       await act(text(500, 'ИП Сидоров'))
       expect(buttons(out.last)[0]).toBe('Я сам за рулём')
@@ -551,6 +567,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(600, 'nvh'))
       await act(text(600, 'Т555ТТ116'))
       await act(text(600, 'Scania R'))
+      await act(press(600, 'vb:0'))
+      await act(text(600, '15'))
+      await act(text(600, '30'))
       await act(press(600, 'own:own'))
       await act(press(600, 'adr:self'))
       expect(out.last?.text).toMatch(/Вы уже водитель другого перевозчика: ООО «ГрузЛайн-Казань»/)
@@ -614,6 +633,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(3, 'nvh'))
       await act(text(3, 'Н001НН116'))
       await act(text(3, 'ГАЗ Валдай'))
+      await act(press(3, 'vb:0'))
+      await act(text(3, '15'))
+      await act(text(3, '30'))
       await act(press(3, 'own:own'))
       await act(contact(3, { user_id: 800, first_name: 'Семён' }))
       const id = await shipmentOf('ОТГ-2026-1056')
@@ -666,6 +688,49 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.inbox.get(1)!.length).toBe(before)
       await act(press(900, 'ci'))
       expect(buttons(out.last)).toEqual(expect.arrayContaining([expect.stringMatching(/ОТГ-2026-1040 · в пути/), expect.stringMatching(/ОТГ-2026-1056/)]))
+    })
+  })
+
+  describe('данные для накладной', () => {
+    it('подтверждённый номер хранится целиком — он идёт в Т1', async () => {
+      const [p] = await conn.db.select().from(person).where(eq(person.maxUserId, 3))
+      expect(p?.phone).toBe('+79170001122')
+      expect(p?.phoneSha256).toMatch(/^[0-9a-f]{64}$/)
+    })
+
+    it('грузоподъёмность вне разумных пределов не принимается', async () => {
+      await openRef(act, out, '1057')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, 'nvh'))
+      await act(text(3, 'О777ОО116'))
+      await act(text(3, 'Hino 500'))
+      expect(out.last?.text).toMatch(/Тип кузова/)
+      await act(press(3, 'vb:3'))
+      await act(text(3, '100'))
+      expect(out.last?.text).toMatch(/от 0,5 до 60/)
+      await act(text(3, '7,5'))
+      await act(text(3, '40'))
+      await act(press(3, 'own:own'))
+      const [car] = await conn.db.select().from(vehicle).where(eq(vehicle.plate, 'О777ОО116'))
+      expect(car).toMatchObject({ bodyType: 'Рефрижератор', capacityT: 7.5, volumeM3: 40 })
+    })
+
+    it('машина без параметров (заведена раньше) — при выборе дозапрашиваем один раз', async () => {
+      await conn.db.update(vehicle).set({ bodyType: null, capacityT: null, volumeM3: null }).where(eq(vehicle.plate, 'О777ОО116'))
+      await act(press(3, 'tl:carrier'))
+      await act(press(3, payloadOf(out.last, 'ОТГ-2026-1057')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'Hino 500')))
+      expect(out.last?.text).toMatch(/Машина: данные для накладной[\s\S]*Тип кузова/)
+      await act(press(3, 'vb:0'))
+      await act(text(3, '8'))
+      await act(text(3, '36'))
+      expect(out.last?.text).toMatch(/Водитель на рейс/)
+      const [car] = await conn.db.select().from(vehicle).where(eq(vehicle.plate, 'О777ОО116'))
+      expect(car).toMatchObject({ bodyType: 'Бортовой', capacityT: 8, volumeM3: 36, ownership: 'own' })
     })
   })
 })

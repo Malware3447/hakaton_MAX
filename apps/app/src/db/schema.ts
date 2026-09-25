@@ -51,7 +51,9 @@ export const person = pgTable('person', {
   /** единственный способ узнать человека и написать ему */
   maxUserId: bigint('max_user_id', { mode: 'number' }).notNull().unique(),
   name: text('name').notNull(),
-  /** sha256 подтверждённого номера, только после согласия; сам номер не храним */
+  /** подтверждённый номер (кнопка «Поделиться номером») — нужен в накладной (решение 25.09); только после согласия */
+  phone: text('phone'),
+  /** sha256 того же номера — в доказательства простой подписи */
   phoneSha256: text('phone_sha256'),
   consentAt: timestamp('consent_at', { withTimezone: true }),
   /** текущая роль; null — показываем корневое меню ролей */
@@ -87,6 +89,10 @@ export const vehicle = pgTable(
     brand: text('brand').notNull(),
     ownership: text('ownership').$type<VehicleOwnership>().notNull(),
     ownerName: text('owner_name'),
+    /** для Т1: тип кузова, грузоподъёмность в тоннах, вместимость в м³ */
+    bodyType: text('body_type'),
+    capacityT: numeric('capacity_t', { mode: 'number' }),
+    volumeM3: numeric('volume_m3', { mode: 'number' }),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('vehicle_org_plate_uq').on(t.orgId, t.plate)],
@@ -109,6 +115,8 @@ export const shipment = pgTable(
     loadingAddress: text('loading_address').notNull(),
     unloadingAddress: text('unloading_address').notNull(),
     plannedLoadingAt: timestamp('planned_loading_at', { withTimezone: true }),
+    /** контактное лицо получателя из учётной системы — телефон идёт в Т1 */
+    consigneeContact: jsonb('consignee_contact').$type<{ name: string | null; phone: string | null }>(),
     cargo: jsonb('cargo')
       .$type<{ lines: { sku: string; name: string; qty: number; grossKg: number; declaration: string | null }[]; places: number; grossKg: number }>()
       .notNull(),
@@ -274,6 +282,8 @@ export const mockErpShipment = mock.table('erp_shipment', {
   shipperInn: text('shipper_inn').notNull(),
   consigneeInn: text('consignee_inn').notNull(),
   consigneeName: text('consignee_name').notNull(),
+  consigneeContactName: text('consignee_contact_name'),
+  consigneePhone: text('consignee_phone'),
   loadingAddress: text('loading_address').notNull(),
   unloadingAddress: text('unloading_address').notNull(),
   plannedLoadingAt: timestamp('planned_loading_at', { withTimezone: true }),

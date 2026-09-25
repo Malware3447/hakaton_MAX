@@ -57,7 +57,7 @@ function actionRows(cmd: CommandType, id: string): Button[][] {
     case 'shipper.offerCarrier':
       return [[cb('Назначить перевозчика', S.assignCarrier(id))]]
     case 'carrier.accept':
-      return [[cb('Принять заявку', S.run(cmd, id))]]
+      return [[cb('Принять заявку', `acc:${id}`)]]
     case 'carrier.decline':
       return [[cb('Отклонить', S.decline(id))]]
     case 'carrier.assign':
