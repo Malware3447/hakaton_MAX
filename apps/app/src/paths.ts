@@ -8,3 +8,5 @@ export const SEED_PATH = process.env.SEED_PATH ?? here('../../../seed/plant-seed
 // Корни УЦ «Госключа» (HAKATON-41) и кэш скачанных промежуточных сертификатов и списков отзыва
 export const GOSKEY_CERTS_DIR = process.env.GOSKEY_CERTS_DIR ?? here('../../../certs/goskey')
 export const GOSKEY_CACHE_DIR = process.env.GOSKEY_CACHE_DIR ?? here('../../../.cache/goskey')
+// Ключи и сертификаты демо-УЦ (HAKATON-36, модель): создаются при первом запуске, в репозиторий не попадают
+export const DEMO_CA_DIR = process.env.DEMO_CA_DIR ?? here('../../../.cache/demo-ca')

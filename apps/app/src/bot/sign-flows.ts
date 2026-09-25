@@ -1,5 +1,6 @@
-import type { Command, Messenger, Role, TitleKind } from '@nk/domain'
+import type { Command, Messenger, Role, SignatureProvider, TitleKind } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
+import { DemoSignError } from '../core/demo-signer.ts'
 import type { ShipmentService } from '../core/shipments.ts'
 import type { SignatureService, SignatureVerifier } from '../core/signatures.ts'
 import { TitleError, type TitleService } from '../core/titles.ts'
@@ -36,6 +37,8 @@ export class SignFlows {
     private readonly titles: TitleService,
     private readonly signatures: SignatureService,
     private readonly verifier: SignatureVerifier | null,
+    /** демо-подпись организации (модель); null — на сервере нет движка ГОСТ */
+    private readonly demoSigner: SignatureProvider | null,
     private readonly messenger: Messenger,
     private readonly flows: ShipmentFlows,
     private readonly ui: Ui,
@@ -144,26 +147,16 @@ export class SignFlows {
     const spec = SIGN[kind]
     if (!spec) return this.ui.notify(to, 'Этот титул пока подписывается позже')
     if (!(await this.shipments.rolesIn(shipmentId, p.id)).includes(spec.role)) return this.ui.notify(to, 'Подписывает другая сторона')
-    let t
+    if (!this.demoSigner) return this.ui.notify(to, 'Демо-подпись недоступна: на сервере нет движка ГОСТ')
+    let signatureId: string
     try {
-      t = await this.titles.ensure(shipmentId, kind)
+      const req = await this.demoSigner.request(shipmentId, kind, p.id, spec.role)
+      signatureId = (await this.demoSigner.accept(req.titleId, p.id, spec.role, null)).id
     } catch (err) {
       if (err instanceof TitleError) return this.ui.notify(to, `Накладную пока не собрать: ${err.message}`)
+      if (err instanceof DemoSignError) return this.ui.notify(to, `Не удалось подписать: ${err.message}`)
       throw err
     }
-    const signatureId = await this.signatures.record({
-      shipmentId,
-      titleId: t.id,
-      titleKind: kind,
-      role: spec.role,
-      kind: 'demo_ca',
-      personId: p.id,
-      cms: null,
-      signerName: p.name,
-      signerSnils: null,
-      verified: true,
-      verifyResult: 'Демо-подпись (модель)',
-    })
     await this.store.clearDialog(p.id)
     await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to)
   }

@@ -1,4 +1,4 @@
-import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OrgRequisites, type OutMessage, type Role } from '@nk/domain'
+import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OrgRequisites, type OutMessage, type Role, type SignatureProvider } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
@@ -72,7 +72,7 @@ export class Bot {
     fleet: FleetService,
     outbox: Outbox,
     cards: CardStore,
-    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null },
+    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null },
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -97,7 +97,7 @@ export class Bot {
       startForm: (p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }) => this.startForm(p, role, to, opts),
     }
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
-    this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
+    this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
     // После «Поделиться номером» подпись продолжается сама
     this.trips.onPhone('sign', (p, pending, to) => this.sign.start(p, pending.title as 'T1' | 'T2', String(pending.shipmentId), to))
   }

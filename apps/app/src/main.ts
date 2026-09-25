@@ -11,9 +11,10 @@ import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
 import { MockEpd } from './adapters/mock-epd.ts'
+import { DemoCaSigner } from './core/demo-signer.ts'
 import { OperatorLink } from './core/operator-link.ts'
-import { FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
-import { GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR } from './paths.ts'
+import { DemoCa, FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
+import { DEMO_CA_DIR, GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR } from './paths.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -55,10 +56,11 @@ if (env.DATABASE_URL) {
 
     const shipments = new ShipmentService(db, erp, directory, jobs)
     const titles = new TitleService(db)
+    const signatures = new SignatureService(db)
     // Проверка подписи «Госключа» (HAKATON-41): без движка ГОСТ в openssl — только демо-подпись
     const pki = new FilePkiStore({ certsDir: GOSKEY_CERTS_DIR, cacheDir: GOSKEY_CACHE_DIR })
     const gost = await gostAvailable()
-    if (!gost) app.log.warn('в openssl нет движка gost — подпись «Госключом» не проверить, доступна только демо-подпись')
+    if (!gost) app.log.warn('в openssl нет движка gost — подпись «Госключом» не проверить, демо-подпись недоступна')
     const bot = new Bot(
       new BotStore(db),
       messenger,
@@ -70,8 +72,10 @@ if (env.DATABASE_URL) {
       cards,
       {
         titles,
-        signatures: new SignatureService(db),
+        signatures,
         verifier: gost ? { verify: (i) => verifyGoskeySignature({ ...i, pki }) } : null,
+        // Демо-подпись организации (HAKATON-36, модель): свой УЦ ГОСТ, ключи создаются при первом запуске
+        demo: gost ? new DemoCaSigner(db, new DemoCa(DEMO_CA_DIR), shipments, titles, signatures) : null,
       },
       env.MAX_BOT_TOKEN,
       me.username,

@@ -140,7 +140,7 @@ export class TitleService {
       .orderBy(desc(signature.createdAt))
       .limit(1)
     if (!sig) throw new TitleError(`${what} ещё не подписан`)
-    // У демо-подписи CMS нет — метка модели вместо подписи
+    // CMS нет только у демо-подписей до HAKATON-36 — для них метка модели вместо подписи
     return { fileId: t.fileId, createdAt: t.createdAt, signatureBase64: Buffer.from(sig.cms ?? Buffer.from('DEMO-SIGNATURE-MODEL')).toString('base64') }
   }
 

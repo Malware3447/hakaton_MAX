@@ -1,5 +1,8 @@
 import type { Messenger, OutMessage } from '@nk/domain'
 import { createHmac } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -7,7 +10,7 @@ import { MockDirectory } from '../adapters/mock-directory.ts'
 import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
-import { event, mockEpdTitle, participant, person, shipment, vehicle } from '../db/schema.ts'
+import { event, mockEpdTitle, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
 import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
@@ -18,7 +21,8 @@ import { TitleService } from '../core/titles.ts'
 import { MockEpd } from '../adapters/mock-epd.ts'
 import { OperatorLink, type OperatorTask } from '../core/operator-link.ts'
 import { SignatureService, type SignatureVerification } from '../core/signatures.ts'
-import { decode1251 } from '@nk/etrn'
+import { DemoCaSigner } from '../core/demo-signer.ts'
+import { DemoCa, decode1251 } from '@nk/etrn'
 import { validateTitle } from '../../../../packages/etrn/src/testing/xsd.ts'
 import { Bot } from './bot.ts'
 import { BotStore } from './store.ts'
@@ -131,6 +135,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
   let conn: Awaited<ReturnType<typeof openDb>>
   let bot: Bot
   let svc: ShipmentService
+  let caDir = ''
+  let demoCa: DemoCa
   const out = new FakeMessenger()
   /** проверка подписи «Госключа»: что вернуть и с чем её вызывали */
   const verifier = {
@@ -160,9 +166,19 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
         },
       },
     ])
-    bot = new Bot(new BotStore(conn.db), out, directory, (svc = new ShipmentService(conn.db, new MockErp(conn.db), directory)), new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles: new TitleService(conn.db), signatures: new SignatureService(conn.db), verifier }, 'test-token', 'test_bot', pino({ level: 'silent' }))
+    svc = new ShipmentService(conn.db, new MockErp(conn.db), directory)
+    const titles = new TitleService(conn.db)
+    const signatures = new SignatureService(conn.db)
+    // Демо-подпись настоящая: свой УЦ ГОСТ во временной папке
+    caDir = await mkdtemp(join(tmpdir(), 'nk-bot-demo-ca-'))
+    demoCa = new DemoCa(caDir)
+    const demo = new DemoCaSigner(conn.db, demoCa, svc, titles, signatures)
+    bot = new Bot(new BotStore(conn.db), out, directory, svc, new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles, signatures, verifier, demo }, 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
-  afterAll(() => conn.pool.end())
+  afterAll(async () => {
+    await conn.pool.end()
+    await rm(caDir, { recursive: true, force: true })
+  })
 
   it('первый вход — приветствие и четыре роли', async () => {
     await act({ update_type: 'bot_started', timestamp: 0, chat_id: 1, user: user(1) })
@@ -945,6 +961,14 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(t3.name).toMatch(/^ON_TRNACLGRPO_/)
       expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
       expect(decode1251(t3.bytes)).toMatch(/СодОпПр="Груз принят частично"[\s\S]*ОбщСвСост="Расхождения: Не хватает 1 бочки 10W-40"/)
+      // Демо-подпись перевозчика под Т2 настоящая: CMS проходит проверку демо-УЦ, её base64 — в атрибуте ЭП Т3
+      const ep = /ИдФайлИнфПрвПрием="[^"]*"[^>]*\sЭП="([^"]*)"/.exec(decode1251(t3.bytes))![1]!
+      const t2sig = (await conn.db.select().from(signature).where(eq(signature.shipmentId, id))).find((x) => x.cms && Buffer.from(x.cms).toString('base64') === ep)!
+      expect(t2sig).toMatchObject({ kind: 'demo_ca', titleKind: 'T2', role: 'carrier', verified: true })
+      const t2bytes = (await new TitleService(conn.db).get(id, 'T2'))!.bytes
+      const carrierInn = (await svc.view(id, 'carrier'))!.carrier!.inn
+      const check = await demoCa.verify({ document: t2bytes, sig: new Uint8Array(t2sig.cms!), expectedInn: carrierInn })
+      expect(check.checks.filter((c) => !c.ok)).toEqual([])
       await act(press(902, `sgd:T3:${id}`))
       expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
 

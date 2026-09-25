@@ -76,6 +76,8 @@ export interface VerifyInput {
   sentAt?: Date | null
   now?: Date
   pki: PkiStore
+  /** как назвать корень в отчёте, если он не «Госключ» и не Минцифры (демо-УЦ) */
+  anchorName?: string
 }
 
 /** Допуск на расхождение часов телефона и сервера. */
@@ -218,7 +220,7 @@ export async function verifyGoskeySignature(input: VerifyInput): Promise<GoskeyV
       const base = ['verify', '-engine', 'gost', '-CAfile', caPath, '-purpose', 'any']
       if (untrusted) base.push('-untrusted', await put('untrusted.pem', untrusted))
       const c = await openssl([...base, leafPath])
-      add('chain', c.ok, c.ok ? `цепочка до корня ${level === 'ukep' ? 'Минцифры (УКЭП)' : '«Госключа» (УНЭП)'}` : `цепочка не сходится: ${opensslReason(c)}`)
+      add('chain', c.ok, c.ok ? `цепочка до корня ${input.anchorName ?? (level === 'ukep' ? 'Минцифры (УКЭП)' : '«Госключа» (УНЭП)')}` : `цепочка не сходится: ${opensslReason(c)}`)
       if (!c.ok) return
 
       let crls: Uint8Array[]

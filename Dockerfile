@@ -30,9 +30,10 @@ COPY --from=build /src/apps/app/dist ./dist
 COPY apps/app/drizzle ./drizzle
 COPY seed ./seed
 COPY certs/goskey ./certs/goskey
-RUN mkdir -p /app/.cache/goskey && chown node:node /app/.cache/goskey
+RUN mkdir -p /app/.cache/goskey /app/.cache/demo-ca && chown node:node /app/.cache/goskey /app/.cache/demo-ca
 ENV MIGRATIONS_DIR=/app/drizzle SEED_PATH=/app/seed/plant-seed.json \
-    GOSKEY_CERTS_DIR=/app/certs/goskey GOSKEY_CACHE_DIR=/app/.cache/goskey
+    GOSKEY_CERTS_DIR=/app/certs/goskey GOSKEY_CACHE_DIR=/app/.cache/goskey \
+    DEMO_CA_DIR=/app/.cache/demo-ca
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \

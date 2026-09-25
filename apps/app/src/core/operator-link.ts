@@ -16,7 +16,7 @@ export type OperatorTask = 'operator.submit' | 'operator.poll' | 'operator.qr'
 /** Как часто спрашивать статус, пока накладная регистрируется. */
 const POLL_S = 2
 
-/** У демо-подписи CMS нет — оператору уходит та же метка, что стоит в атрибуте ЭП титулов. */
+/** CMS нет только у демо-подписей до HAKATON-36 — оператору уходит та же метка, что стоит в атрибуте ЭП титулов. */
 const DEMO_SIGNATURE = Buffer.from('DEMO-SIGNATURE-MODEL')
 
 export class OperatorLink {
