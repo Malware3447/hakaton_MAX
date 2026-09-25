@@ -6,6 +6,7 @@ import { inviteLink, sha256 } from '../core/invites.ts'
 import { esc } from '../max/messenger.ts'
 import { phoneFromVcf } from '../max/contact.ts'
 import type { MaxAttachment } from '../max/types.ts'
+import type { Outbox } from './outbox.ts'
 import { S, cb } from './screens.ts'
 import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
 import { ROLE_TITLE } from './screens.ts'
@@ -46,7 +47,7 @@ export class ShipmentFlows {
     private readonly store: BotStore,
     private readonly shipments: ShipmentService,
     private readonly invites: InviteService,
-    private readonly messenger: Messenger,
+    private readonly messenger: Outbox,
     private readonly ui: Ui,
     private readonly botUsername: string,
     private readonly log: FastifyBaseLogger,

@@ -6,6 +6,7 @@ import type { ShipmentService } from '../core/shipments.ts'
 import { phoneFromVcf, verifyContactHash } from '../max/contact.ts'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment } from '../max/types.ts'
+import type { Outbox } from './outbox.ts'
 import { S, cb } from './screens.ts'
 import { shipmentList } from './cards.ts'
 import type { Reply, ShipmentFlows, Ui } from './shipment-flows.ts'
@@ -28,7 +29,7 @@ export class TripFlows {
     private readonly shipments: ShipmentService,
     private readonly fleet: FleetService,
     private readonly flows: ShipmentFlows,
-    private readonly messenger: Messenger,
+    private readonly messenger: Outbox,
     private readonly ui: Ui,
     private readonly botToken: string,
     private readonly botUsername: string,

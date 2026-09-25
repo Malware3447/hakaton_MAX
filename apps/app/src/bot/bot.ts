@@ -8,6 +8,7 @@ import type { ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 import { TripFlows } from './trip-flows.ts'
+import type { Outbox } from './outbox.ts'
 import type { FleetService } from '../core/fleet.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
@@ -56,6 +57,7 @@ export class Bot {
     shipments: ShipmentService,
     invites: InviteService,
     fleet: FleetService,
+    outbox: Outbox,
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -64,7 +66,7 @@ export class Bot {
       store,
       shipments,
       invites,
-      messenger,
+      outbox,
       {
         reply: (to, m, n) => this.reply(to, m, n),
         notify: (to, t) => this.notify(to, t),
@@ -78,7 +80,7 @@ export class Bot {
       notify: (to: Reply, text: string) => this.notify(to, text),
       startForm: (p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }) => this.startForm(p, role, to, opts),
     }
-    this.trips = new TripFlows(store, shipments, fleet, this.flows, messenger, ui, botToken, botUsername, log)
+    this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
   }
 
   async handle(u: MaxUpdate): Promise<void> {

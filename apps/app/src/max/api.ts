@@ -1,3 +1,4 @@
+import { RateLimiter } from './limiter.ts'
 import type { MaxUpdate, NewMessageBody } from './types.ts'
 
 // Тонкий клиент MAX Bot API. Токен — в заголовке Authorization.
@@ -12,15 +13,25 @@ export class MaxApiError extends Error {
   ) {
     super(message)
   }
+
+  /**
+   * Человеку не написать и повторять бессмысленно: остановил бота (403) или ни разу его
+   * не запускал (404 dialog.not.found, проверено 25.09).
+   */
+  get unreachable(): boolean {
+    return this.status === 403 || (this.status === 404 && (this.code === 'dialog.not.found' || this.code === 'chat.not.found'))
+  }
 }
 
 export class MaxApi {
   constructor(
     private readonly token: string,
     private readonly base = 'https://platform-api2.max.ru',
+    private readonly limiter = new RateLimiter(),
   ) {}
 
-  private async call<T>(method: string, path: string, query: Record<string, string | number | undefined> = {}, body?: unknown): Promise<T> {
+  private async call<T>(method: string, path: string, query: Record<string, string | number | undefined> = {}, body?: unknown, dialogKey?: string): Promise<T> {
+    await this.limiter.acquire(dialogKey)
     const url = new URL(path, this.base)
     for (const [k, v] of Object.entries(query)) if (v !== undefined) url.searchParams.set(k, String(v))
     for (let attempt = 1; ; attempt++) {
@@ -55,12 +66,48 @@ export class MaxApi {
   }
 
   async sendToUser(userId: number, body: NewMessageBody): Promise<string> {
-    const res = await this.call<{ message: { body: { mid: string } } }>('POST', '/messages', { user_id: userId }, body)
-    return res.message.body.mid
+    // Файл сразу после загрузки бывает не готов: attachment.not.ready — ждём и повторяем
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const res = await this.call<{ message: { body: { mid: string } } }>('POST', '/messages', { user_id: userId }, body, `u${userId}`)
+        return res.message.body.mid
+      } catch (err) {
+        if (err instanceof MaxApiError && err.code === 'attachment.not.ready' && attempt < 6) {
+          await new Promise((r) => setTimeout(r, attempt * 700))
+          continue
+        }
+        throw err
+      }
+    }
   }
 
   editMessage(mid: string, body: NewMessageBody) {
     return this.call<{ success: boolean }>('PUT', '/messages', { message_id: mid }, body)
+  }
+
+  /** Загрузить файл: POST /uploads?type=file даёт адрес, туда multipart с полем data; в ответ токен вложения. */
+  async uploadFile(name: string, bytes: Uint8Array): Promise<string> {
+    const ep = await this.call<{ url: string; token?: string }>('POST', '/uploads', { type: 'file' })
+    const form = new FormData()
+    form.append('data', new Blob([bytes]), name)
+    const res = await fetch(ep.url, { method: 'POST', headers: { Authorization: this.token }, body: form, signal: AbortSignal.timeout(60_000) })
+    if (!res.ok) throw new MaxApiError(res.status, undefined, `загрузка файла: ${res.status}`)
+    const info = (await res.json().catch(() => ({}))) as { token?: string }
+    const token = info.token ?? ep.token
+    if (!token) throw new MaxApiError(500, undefined, 'загрузка файла: нет токена вложения')
+    return token
+  }
+
+  getSubscriptions() {
+    return this.call<{ subscriptions: { url: string; time: number; update_types?: string[] }[] }>('GET', '/subscriptions')
+  }
+
+  subscribe(url: string, secret: string, updateTypes: string[]) {
+    return this.call<{ success: boolean }>('POST', '/subscriptions', {}, { url, secret, update_types: updateTypes })
+  }
+
+  unsubscribe(url: string) {
+    return this.call<{ success: boolean }>('DELETE', '/subscriptions', { url })
   }
 
   answerCallback(callbackId: string, answer: { message?: NewMessageBody; notification?: string }) {

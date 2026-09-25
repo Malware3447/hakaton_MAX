@@ -24,8 +24,17 @@ export function toBody(m: OutMessage): NewMessageBody {
 export class MaxMessenger implements Messenger {
   constructor(private readonly api: MaxApi) {}
 
+  /** Файл в MAX — единственное вложение сообщения: файл и кнопки уходят двумя сообщениями. */
   async send(maxUserId: number, message: OutMessage) {
-    return { mid: await this.api.sendToUser(maxUserId, toBody(message)) }
+    if (!message.file) return { mid: await this.api.sendToUser(maxUserId, toBody(message)) }
+    const token = await this.api.uploadFile(message.file.name, message.file.bytes)
+    const fileMid = await this.api.sendToUser(maxUserId, {
+      text: message.buttons?.length ? null : message.text,
+      format: 'html',
+      attachments: [{ type: 'file', payload: { token } }],
+    })
+    if (!message.buttons?.length) return { mid: fileMid }
+    return { mid: await this.api.sendToUser(maxUserId, toBody({ text: message.text, buttons: message.buttons })) }
   }
 
   async edit(mid: string, message: OutMessage) {

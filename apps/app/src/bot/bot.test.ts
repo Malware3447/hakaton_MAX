@@ -110,7 +110,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     conn = await openDb(url!)
     await resetDemo(conn.db, await readSeed())
     const directory = new MockDirectory(conn.db)
-    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), 'test-token', 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, new ShipmentService(conn.db, new MockErp(conn.db), directory), new InviteService(conn.db), new FleetService(conn.db), out, 'test-token', 'test_bot', pino({ level: 'silent' }))
   })
   afterAll(() => conn.pool.end())
 

@@ -48,6 +48,11 @@ function eventPayload(cmd: Command): Record<string, unknown> {
   return rest
 }
 
+/** Куда ядро отдаёт последствия после коммита: очередь заданий (jobs/jobs.ts). */
+export interface EffectSink {
+  enqueue(shipmentId: string, effects: Effect[]): Promise<void>
+}
+
 export interface ShipperListItem {
   erpRef: string
   consigneeName: string
@@ -61,6 +66,7 @@ export class ShipmentService {
     private readonly db: Db,
     private readonly erp: ErpAdapter,
     private readonly directory: OrgDirectory,
+    private readonly sink: EffectSink | null = null,
   ) {}
 
   // ---------- создание ----------
@@ -135,8 +141,9 @@ export class ShipmentService {
   // ---------- команды ----------
 
   async execute(cmd: Command, actor: Actor): Promise<ExecResult> {
+    let res: ExecResult
     try {
-      return await this.executeTx(cmd, actor)
+      res = await this.executeTx(cmd, actor)
     } catch (err) {
       // Частичные уникальные индексы: одна активная перевозка на машину и на водителя
       const pg = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } }
@@ -148,6 +155,10 @@ export class ShipmentService {
       }
       throw err
     }
+    // После коммита: последствия с внешними системами — в очередь.
+    // Если процесс упадёт между коммитом и постановкой, последствие потеряется; для MVP допустимо.
+    if (res.ok && res.afterCommit.length && this.sink) await this.sink.enqueue(res.shipmentId, res.afterCommit)
+    return res
   }
 
   private async executeTx(cmd: Command, actor: Actor): Promise<ExecResult> {

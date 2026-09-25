@@ -1,14 +1,15 @@
 import { MockDirectory } from './adapters/mock-directory.ts'
 import { MockErp } from './adapters/mock-erp.ts'
-import { ShipmentService } from './core/shipments.ts'
-import { InviteService } from './core/invite-service.ts'
-import { FleetService } from './core/fleet.ts'
 import { buildApp, type AppDeps } from './app.ts'
 import { Bot } from './bot/bot.ts'
 import { BotStore } from './bot/store.ts'
+import { FleetService } from './core/fleet.ts'
+import { InviteService } from './core/invite-service.ts'
+import { ShipmentService } from './core/shipments.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
+import { Jobs } from './jobs/jobs.ts'
 import { MaxApi } from './max/api.ts'
 import { MaxMessenger } from './max/messenger.ts'
 import { startPolling } from './max/polling.ts'
@@ -17,19 +18,42 @@ const env = loadEnv()
 const deps: AppDeps = {}
 const app = buildApp(env, deps)
 
-let stopPolling: (() => void) | undefined
+const stops: (() => unknown)[] = []
 
 if (env.DATABASE_URL) {
   const { db, pool } = await openDb(env.DATABASE_URL)
   if (await seedIfEmpty(db, await readSeed())) app.log.info('база пустая — модели заполнены из сида')
-  app.addHook('onClose', () => pool.end())
+  stops.push(() => pool.end())
 
   if (env.MAX_MODE !== 'off' && env.MAX_BOT_TOKEN) {
     const api = new MaxApi(env.MAX_BOT_TOKEN)
+    const messenger = new MaxMessenger(api)
     const me = await api.getMe()
     const directory = new MockDirectory(db)
-    const shipments = new ShipmentService(db, new MockErp(db), directory)
-    const bot = new Bot(new BotStore(db), new MaxMessenger(api), directory, shipments, new InviteService(db), new FleetService(db), env.MAX_BOT_TOKEN, me.username, app.log)
+    const erp = new MockErp(db)
+
+    // Очередь заданий: уведомления участникам и последствия переходов (учётка, оператор, QR)
+    const jobs = new Jobs(Jobs.create(env.DATABASE_URL), db, messenger, erp, app.log)
+    const webhook =
+      env.MAX_MODE === 'webhook' && env.PUBLIC_URL && env.MAX_WEBHOOK_SECRET
+        ? { api, url: new URL('/bot/webhook', env.PUBLIC_URL).toString(), secret: env.MAX_WEBHOOK_SECRET }
+        : undefined
+    await jobs.start({ webhook })
+    stops.unshift(() => jobs.stop())
+
+    const shipments = new ShipmentService(db, erp, directory, jobs)
+    const bot = new Bot(
+      new BotStore(db),
+      messenger,
+      directory,
+      shipments,
+      new InviteService(db),
+      new FleetService(db),
+      jobs,
+      env.MAX_BOT_TOKEN,
+      me.username,
+      app.log,
+    )
     await api
       .setCommands([
         { name: 'menu', description: 'Меню ролей' },
@@ -37,8 +61,9 @@ if (env.DATABASE_URL) {
         { name: 'help', description: 'Как пользоваться' },
       ])
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
+
     if (env.MAX_MODE === 'polling') {
-      stopPolling = startPolling(api, (u) => bot.handle(u), app.log)
+      stops.unshift(startPolling(api, (u) => bot.handle(u), app.log))
       app.log.info('бот слушает MAX в режиме polling')
     } else {
       deps.onUpdate = (u) => bot.handle(u)
@@ -48,10 +73,13 @@ if (env.DATABASE_URL) {
   app.log.warn('DATABASE_URL не задан — работаю без базы')
 }
 
+app.addHook('onClose', async () => {
+  for (const stop of stops) await stop()
+})
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     app.log.info({ signal }, 'остановка')
-    stopPolling?.()
     app.close().then(() => process.exit(0), () => process.exit(1))
   })
 }
