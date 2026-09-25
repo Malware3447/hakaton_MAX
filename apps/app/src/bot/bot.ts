@@ -160,7 +160,7 @@ export class Bot {
   private async onContact(a: MaxAttachment, to: Reply) {
     const info = a.payload?.max_info
     const vcfName = /(?:^|\n)FN:(.*)/.exec(a.payload?.vcf_info ?? '')?.[1]?.trim()
-    this.log.info({ hasMaxInfo: Boolean(info), hasVcf: Boolean(a.payload?.vcf_info), hasHash: Boolean(a.payload?.hash) }, 'получен контакт')
+    this.log.info({ contactUserId: info?.user_id ?? null, hasVcf: Boolean(a.payload?.vcf_info), hasHash: Boolean(a.payload?.hash) }, 'получен контакт')
     const name = info ? fullName(info) : vcfName ?? 'без имени'
     return this.reply(to, {
       text: [
