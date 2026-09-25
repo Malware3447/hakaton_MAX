@@ -11,6 +11,8 @@ import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
 import { MockOperator } from './core/mock-operator.ts'
+import { FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
+import { GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR } from './paths.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -52,6 +54,10 @@ if (env.DATABASE_URL) {
 
     const shipments = new ShipmentService(db, erp, directory, jobs)
     const titles = new TitleService(db)
+    // Проверка подписи «Госключа» (HAKATON-41): без движка ГОСТ в openssl — только демо-подпись
+    const pki = new FilePkiStore({ certsDir: GOSKEY_CERTS_DIR, cacheDir: GOSKEY_CACHE_DIR })
+    const gost = await gostAvailable()
+    if (!gost) app.log.warn('в openssl нет движка gost — подпись «Госключом» не проверить, доступна только демо-подпись')
     const bot = new Bot(
       new BotStore(db),
       messenger,
@@ -61,8 +67,11 @@ if (env.DATABASE_URL) {
       new FleetService(db),
       jobs,
       cards,
-      // Проверка подписи «Госключа» — модуль Егора (HAKATON-41); до слияния — только демо-подпись
-      { titles, signatures: new SignatureService(db), verifier: null },
+      {
+        titles,
+        signatures: new SignatureService(db),
+        verifier: gost ? { verify: (i) => verifyGoskeySignature({ ...i, pki }) } : null,
+      },
       env.MAX_BOT_TOKEN,
       me.username,
       app.log,

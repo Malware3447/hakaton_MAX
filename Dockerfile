@@ -29,7 +29,10 @@ ENV NODE_ENV=production PORT=3000
 COPY --from=build /src/apps/app/dist ./dist
 COPY apps/app/drizzle ./drizzle
 COPY seed ./seed
-ENV MIGRATIONS_DIR=/app/drizzle SEED_PATH=/app/seed/plant-seed.json
+COPY certs/goskey ./certs/goskey
+RUN mkdir -p /app/.cache/goskey && chown node:node /app/.cache/goskey
+ENV MIGRATIONS_DIR=/app/drizzle SEED_PATH=/app/seed/plant-seed.json \
+    GOSKEY_CERTS_DIR=/app/certs/goskey GOSKEY_CACHE_DIR=/app/.cache/goskey
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \
