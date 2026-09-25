@@ -10,7 +10,6 @@ import type { Outbox } from './outbox.ts'
 import { S, cb } from './screens.ts'
 import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
 import { ROLE_TITLE } from './screens.ts'
-import QRCode from 'qrcode'
 import { MOVED_CARD, renderHash, type CardStore } from './card-store.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 
@@ -361,17 +360,16 @@ export class ShipmentFlows {
   // ---------- QR-код водителю (модель ГИС ЭПД) ----------
 
   /** После регистрации накладной: QR-код для проверки на дороге — водителю файлом в чат. */
-  async sendQrToDriver(shipmentId: string) {
+  async sendQrToDriver(shipmentId: string, file: { name: string; bytes: Uint8Array }) {
     const view = await this.shipments.view(shipmentId, 'driver')
     const driver = await this.shipments.participantOf(shipmentId, 'driver')
     if (!view?.uid || !driver) return
-    const png = await QRCode.toBuffer(JSON.stringify({ uid: view.uid, number: view.erpRef, model: true }), { type: 'png', width: 512, margin: 2 })
     await this.messenger
       .send(
         driver.maxUserId,
         {
           text: `QR-код накладной ${esc(view.erpRef)}. Покажите его на проверке на дороге — файл открывается без сети. <i>Модель ГИС ЭПД.</i>`,
-          file: { name: `QR-${view.erpRef}.png`, bytes: new Uint8Array(png) },
+          file,
         },
         { shipmentId },
       )
@@ -592,7 +590,9 @@ export class ShipmentFlows {
               ? `🚚 <b>Вам назначен рейс</b> от ${esc(view.carrier?.name ?? 'перевозчика')}`
               : res.to === 'loaded'
                 ? `🔔 <b>Сейчас ваш ход:</b> водитель принял груз${view.loadingRemarks ? ` с замечаниями: ${esc(view.loadingRemarks)}` : ' без замечаний'}. Подпишите накладную.`
-                : '🔔 <b>Сейчас ваш ход</b>'
+                : res.to === 't1_signed' && reason
+                  ? `⚠️ ${esc(reason)}. Подпишите накладную ещё раз — оператор примет её заново.`
+                  : '🔔 <b>Сейчас ваш ход</b>'
     const msg = shipmentCard(view, note)
     const sent = await this.messenger
       .send(target.maxUserId, msg, {

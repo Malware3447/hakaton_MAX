@@ -13,9 +13,10 @@ import { MaxApiError } from '../max/api.ts'
 // Очередь заданий на pg-boss в той же базе (HAKATON-26):
 // notify — сообщения участникам с повторами и лимитами MAX;
 // effect — последствия переходов, которые требуют внешних систем (учётка, оператор, QR);
+// later — отложенные шаги модели оператора (регистрация, QR): переживают перезапуск;
 // subscription-check — самопроверка вебхука раз в 10 минут.
 
-export const Q = { notify: 'notify', edit: 'edit', effect: 'effect', subscription: 'subscription-check', inboxRetry: 'inbox-retry' } as const
+export const Q = { notify: 'notify', edit: 'edit', effect: 'effect', later: 'later', subscription: 'subscription-check', inboxRetry: 'inbox-retry' } as const
 
 interface NotifyJob extends NotifyMeta {
   userId: number
@@ -35,6 +36,13 @@ interface EffectJob {
   effect: Effect
 }
 
+/** Отложенный шаг: что сделать (task) и с какой перевозкой; arg — уточнение, например вид титула. */
+export interface LaterJob {
+  task: string
+  shipmentId: string
+  arg?: string
+}
+
 export class Jobs implements Outbox, EffectSink {
   constructor(
     private readonly boss: PgBoss,
@@ -46,10 +54,16 @@ export class Jobs implements Outbox, EffectSink {
   ) {}
 
   private readonly effectHandlers = new Map<Effect['kind'], (shipmentId: string, effect: Effect) => Promise<unknown>>()
+  private readonly laterHandlers = new Map<string, (job: LaterJob) => Promise<unknown>>()
 
   /** Обработчик последствия: оператор, QR, приглашение получателю. */
   onEffect(kind: Effect['kind'], fn: (shipmentId: string, effect: Effect) => Promise<unknown>) {
     this.effectHandlers.set(kind, fn)
+  }
+
+  /** Обработчик отложенного шага. */
+  onLater(task: string, fn: (job: LaterJob) => Promise<unknown>) {
+    this.laterHandlers.set(task, fn)
   }
 
   static create(url: string) {
@@ -70,6 +84,14 @@ export class Jobs implements Outbox, EffectSink {
     })
     await this.boss.work<EffectJob>(Q.effect, { pollingIntervalSeconds: 0.5 }, async (jobs) => {
       for (const j of jobs) await this.runEffect(j.data)
+    })
+    await this.boss.createQueue(Q.later, { retryLimit: 10, retryDelay: 5, retryBackoff: true })
+    await this.boss.work<LaterJob>(Q.later, { pollingIntervalSeconds: 0.5 }, async (jobs) => {
+      for (const j of jobs) {
+        const handler = this.laterHandlers.get(j.data.task)
+        if (handler) await handler(j.data)
+        else this.log.warn({ task: j.data.task }, 'отложенный шаг без обработчика')
+      }
     })
     if (opts.inboxRetry) {
       const retry = opts.inboxRetry
@@ -106,6 +128,11 @@ export class Jobs implements Outbox, EffectSink {
 
   async enqueue(shipmentId: string, effects: Effect[]) {
     for (const effect of effects) await this.boss.send(Q.effect, { shipmentId, effect } satisfies EffectJob)
+  }
+
+  /** Выполнить шаг не раньше чем через delaySeconds. */
+  async later(job: LaterJob, delaySeconds: number) {
+    await this.boss.send(Q.later, job, { startAfter: Math.max(0, Math.round(delaySeconds)) })
   }
 
   // ---------- выполнение ----------

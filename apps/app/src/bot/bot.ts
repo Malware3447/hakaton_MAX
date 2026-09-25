@@ -107,14 +107,14 @@ export class Bot {
     return this.flows.consigneeArrival(shipmentId)
   }
 
-  /** QR-код водителю после регистрации накладной (последствие sendQrToDriver). */
-  sendQrToDriver(shipmentId: string) {
-    return this.flows.sendQrToDriver(shipmentId)
+  /** QR-код от оператора водителю после регистрации накладной (последствие sendQrToDriver). */
+  sendQrToDriver(shipmentId: string, file: { name: string; bytes: Uint8Array }) {
+    return this.flows.sendQrToDriver(shipmentId, file)
   }
 
-  /** Переход по ответу системы (оператор): уведомить того, чей ход, и перерисовать карточки. */
-  afterSystemTransition(res: Extract<ExecResult, { ok: true }>) {
-    return this.flows.afterTransition(res, { personId: '', role: 'shipper' })
+  /** Переход по ответу системы (оператор): уведомить того, чей ход, и перерисовать карточки; reason — причина отказа. */
+  afterSystemTransition(res: Extract<ExecResult, { ok: true }>, reason?: string) {
+    return this.flows.afterTransition(res, { personId: '', role: 'shipper' }, reason)
   }
 
   async handle(u: MaxUpdate): Promise<void> {

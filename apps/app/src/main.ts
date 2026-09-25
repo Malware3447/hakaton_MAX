@@ -85,10 +85,16 @@ if (env.DATABASE_URL) {
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
 
     jobs.onEffect('inviteConsignee', (id) => bot.consigneeArrival(id))
-    jobs.onEffect('sendQrToDriver', (id) => bot.sendQrToDriver(id))
-    // Модель оператора ЭПД: номер накладной после Т1, регистрация в ГИС ЭПД после Т2
-    const operator = new MockOperator(db, shipments, titles, (res) => bot.afterSystemTransition(res))
+    // Модель оператора ЭПД (HAKATON-39): номер накладной после Т1, регистрация в ГИС ЭПД после Т2, QR водителю.
+    // Ответы — отложенными шагами очереди, сбои — ручками в mock.epd_settings
+    const operator = new MockOperator(db, shipments, titles, {
+      onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
+      later: (task, shipmentId, delayS, arg) => jobs.later({ task, shipmentId, arg }, delayS),
+      sendQr: (shipmentId, file) => bot.sendQrToDriver(shipmentId, file),
+    })
+    for (const task of ['operator.register', 'operator.qr', 'operator.submit'] as const) jobs.onLater(task, (j) => operator.run(task, j.shipmentId, j.arg))
     jobs.onEffect('submitTitle', (id, e) => (e.kind === 'submitTitle' ? operator.submit(id, e.title) : Promise.resolve()))
+    jobs.onEffect('sendQrToDriver', (id) => operator.qrRequested(id))
 
     // Все обновления — через inbox: повторы MAX отсекаются, упавшие повторяются раз в минуту
     const inbox = new Inbox(db, (u) => bot.handle(u), app.log)
