@@ -129,7 +129,12 @@ export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
     case 'consignee':
       return {
         text: [...head, '', waitingLine].join('\n'),
-        buttons: [stub('Ко мне едут', 'consignee.incoming'), stub('Приёмка', 'consignee.receiving'), [cb('Компания', P.company)], switchRole],
+        buttons: [
+          [cb(`Приёмка${n(extra.waiting)}`, S.waiting('consignee'))],
+          [cb('Ко мне едут', 'ci')],
+          [cb('Компания', P.company)],
+          switchRole,
+        ],
       }
   }
 }

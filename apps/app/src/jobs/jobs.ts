@@ -45,6 +45,13 @@ export class Jobs implements Outbox, EffectSink {
     private readonly log: FastifyBaseLogger,
   ) {}
 
+  private readonly effectHandlers = new Map<Effect['kind'], (shipmentId: string, effect: Effect) => Promise<unknown>>()
+
+  /** Обработчик последствия: оператор, QR, приглашение получателю. */
+  onEffect(kind: Effect['kind'], fn: (shipmentId: string, effect: Effect) => Promise<unknown>) {
+    this.effectHandlers.set(kind, fn)
+  }
+
   static create(url: string) {
     return new PgBoss({ connectionString: url, schema: 'pgboss' })
   }
@@ -154,9 +161,12 @@ export class Jobs implements Outbox, EffectSink {
         )
         return
       }
-      default:
-        // submitTitle, sendQrToDriver, inviteConsignee — подключаются с оператором и накладной (HAKATON-35, 39)
+      default: {
+        const handler = this.effectHandlers.get(effect.kind)
+        if (handler) return void (await handler(shipmentId, effect))
+        // submitTitle, sendQrToDriver — подключаются с оператором и накладной (HAKATON-35, 39)
         this.log.info({ shipmentId, effect: effect.kind }, 'последствие ждёт реализации')
+      }
     }
   }
 

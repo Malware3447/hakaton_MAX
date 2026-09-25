@@ -11,6 +11,9 @@ export interface MaxUser {
 
 export interface MaxAttachment {
   type: string
+  /** у файла — имя и размер */
+  filename?: string
+  size?: number
   payload?: Record<string, unknown> & {
     vcf_info?: string | null
     hash?: string | null

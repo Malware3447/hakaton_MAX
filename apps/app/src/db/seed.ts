@@ -26,7 +26,7 @@ interface SeedShipment {
 export interface PlantSeed {
   generated_at: string
   shipper: SeedOrg & { loading_point: string }
-  counterparties: (SeedOrg & { id: string })[]
+  counterparties: (SeedOrg & { id: string; contact?: { name: string; phone: string } })[]
   carriers: (SeedOrg & { id: string })[]
   shipments: SeedShipment[]
 }
@@ -49,6 +49,9 @@ export function seedRows(seed: PlantSeed, today: Date) {
     address: o.address,
   }))
   const innById = new Map(seed.counterparties.map((c) => [c.id, c.inn]))
+  const contactById = new Map(seed.counterparties.map((c) => [c.id, c.contact]))
+  // «+7 957 000-51-94» → «+79570005194»: так телефон записан в накладной
+  const phone = (p?: string) => (p ? `+${p.replace(/\D/g, '')}` : null)
   const loadingAddress = `${seed.shipper.address}, ${seed.shipper.loading_point}`
   const shipments = seed.shipments.map((s) => {
     const consigneeInn = innById.get(s.consignee_id)
@@ -58,6 +61,8 @@ export function seedRows(seed: PlantSeed, today: Date) {
       shipperInn: seed.shipper.inn,
       consigneeInn,
       consigneeName: s.consignee_name,
+      consigneeContactName: contactById.get(s.consignee_id)?.name ?? null,
+      consigneePhone: phone(contactById.get(s.consignee_id)?.phone),
       loadingAddress,
       unloadingAddress: s.unloading_address,
       plannedLoadingAt: new Date(Date.parse(s.planned_loading_at) + shift),

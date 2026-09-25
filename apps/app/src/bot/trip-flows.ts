@@ -23,6 +23,30 @@ const OWNERSHIP: { code: VehicleOwnership; text: string }[] = [
 
 type Ctx = Record<string, unknown>
 
+/** Тип кузова — в Т1 (ПарТС/@Тип). */
+export const BODY_TYPES = ['Бортовой', 'Тентованный', 'Фургон', 'Рефрижератор', 'Цистерна', 'Самосвал']
+const pairs = <T>(xs: T[]) => xs.reduce<T[][]>((acc, x, i) => (i % 2 ? acc[acc.length - 1]!.push(x) : acc.push([x]), acc), [])
+
+/** Действия с простой подписью: текст кнопки идёт в доказательства, ask — что спросить текстом после. */
+type PepKind = 'load_ok' | 'load_rm' | 'delivered' | 'accept_full' | 'accept_partial' | 'accept_refused'
+const PEP: Record<PepKind, { button: string; ask?: string }> = {
+  load_ok: { button: 'Всё верно, груз принят' },
+  load_rm: {
+    button: 'Есть замечания',
+    ask: '<b>Замечания к грузу</b>\n\nОпишите, что не так: недостача, повреждения, не та упаковка. Отправитель увидит это до подписи.',
+  },
+  delivered: { button: 'Груз сдан' },
+  accept_full: { button: 'Принято без расхождений' },
+  accept_partial: {
+    button: 'Принято частично',
+    ask: '<b>Расхождения при приёмке</b>\n\nЧто не приняли и почему: сколько мест, какие позиции, что с ними. Это попадёт в накладную.',
+  },
+  accept_refused: {
+    button: 'Отказ от груза',
+    ask: '<b>Отказ от груза</b>\n\nПочему отказываетесь от груза? Это попадёт в накладную, отправитель и перевозчик увидят причину.',
+  },
+}
+
 export class TripFlows {
   constructor(
     private readonly store: BotStore,
@@ -46,7 +70,25 @@ export class TripFlows {
         await this.askVehicle(p, arg, to)
         return true
       case 'avh':
-        return this.withDialog(p, 'await:vehicle', to, (d) => this.askDriver(p, { ...d.context, vehicleId: arg }, to))
+        return this.withDialog(p, 'await:vehicle', to, async (d) => {
+          const car = await this.fleet.get(arg)
+          if (!car) return this.askVehicle(p, String(d.context.shipmentId), to)
+          // Машина заведена до 25.09, без параметров для накладной — дозаполняем один раз
+          if (!car.bodyType || car.capacityT == null || car.volumeM3 == null) {
+            const ctx = { ...d.context, plate: car.plate, brand: car.brand, ownership: car.ownership, ownerName: car.ownerName, fill: true }
+            return this.step(p, 'await:vehicle_body', ctx, to)
+          }
+          return this.askDriver(p, { ...d.context, vehicleId: arg }, to)
+        })
+      case 'vb':
+        return this.withDialog(p, 'await:vehicle_body', to, (d) => this.step(p, 'await:vehicle_capacity', { ...d.context, bodyType: BODY_TYPES[Number(arg)] }, to))
+      case 'acc': {
+        if (to.kind !== 'callback') return true
+        const pending = { shipmentId: arg, kind: 'carrier_accept', callbackId: to.callbackId, mid: to.mid ?? '', buttonText: 'Принять заявку', at: new Date().toISOString() }
+        if (!p.phone) await this.askPhone(p, pending, to)
+        else await this.flows.run(p, { type: 'carrier.accept', shipmentId: arg, payload: {} }, to)
+        return true
+      }
       case 'nvh':
         return this.withDialog(p, 'await:vehicle', to, (d) => this.step(p, 'await:vehicle_plate', d.context, to))
       case 'own':
@@ -59,7 +101,10 @@ export class TripFlows {
         if (arg === 'self') return this.withDialog(p, 'await:driver', to, (d) => this.selfDriver(p, d.context, to))
         return this.withDialog(p, 'await:driver', to, (d) => this.assign(p, d.context, { personId: arg }, to))
       case 'cl':
-        await this.loadingButton(p, rest[0] === 'ok' ? 'ok' : 'remarks', rest[1]!, to)
+        await this.pepButton(p, rest[0] === 'ok' ? 'load_ok' : 'load_rm', rest[1]!, to)
+        return true
+      case 'pep':
+        await this.pepButton(p, rest[0] as PepKind, rest[1]!, to)
         return true
       case 'fleet':
         await this.showFleet(p, to)
@@ -99,8 +144,21 @@ export class TripFlows {
       }
       case 'await:vehicle_brand':
         if (text.length < 2) return this.step(p, d.step, d.context, to, 'Слишком коротко.').then(() => true)
-        await this.step(p, 'await:vehicle_ownership', { ...d.context, brand: text }, to)
+        await this.step(p, 'await:vehicle_body', { ...d.context, brand: text }, to)
         return true
+      case 'await:vehicle_capacity':
+      case 'await:vehicle_volume': {
+        const n = Number(text.replace(',', '.').replace(/[^\d.]/g, ''))
+        const cap = d.step === 'await:vehicle_capacity'
+        const [min, max] = cap ? [0.5, 60] : [1, 200]
+        if (!Number.isFinite(n) || n < min || n > max) {
+          return this.step(p, d.step, d.context, to, cap ? 'Грузоподъёмность в тоннах, от 0,5 до 60. Например 15' : 'Объём кузова в м³, от 1 до 200. Например 30').then(() => true)
+        }
+        if (cap) await this.step(p, 'await:vehicle_volume', { ...d.context, capacityT: n }, to)
+        else if (d.context.fill) await this.saveVehicle(p, { ...d.context, volumeM3: n }, (d.context.ownerName as string | null) ?? null, to)
+        else await this.step(p, 'await:vehicle_ownership', { ...d.context, volumeM3: n }, to)
+        return true
+      }
       case 'await:vehicle_owner':
         if (text.length < 3) return this.step(p, d.step, d.context, to, 'Укажите владельца: название компании или ФИО.').then(() => true)
         await this.saveVehicle(p, d.context, text, to)
@@ -109,14 +167,16 @@ export class TripFlows {
       case 'await:phone':
         await this.ui.reply(to, { text: d.step === 'await:driver' ? 'Нужен контакт водителя: скрепка → «Контакт». Или выберите кнопкой выше.' : 'Нажмите кнопку «Поделиться номером» выше.' })
         return true
-      case 'await:loading_remarks':
+      case 'await:pep_text': {
         if (text.length < 3) {
-          await this.ui.reply(to, { text: 'Опишите замечания подробнее: что не так с грузом.' })
+          await this.ui.reply(to, { text: 'Опишите подробнее: что именно не так с грузом.' })
           return true
         }
         await this.store.clearDialog(p.id)
-        await this.confirmLoading(p, String(d.context.shipmentId), text, d.context.evidence as PepEvidence, to)
+        const c = d.context
+        await this.runPep(p, c.kind as PepKind, String(c.shipmentId), text, c.evidence as PepEvidence, to)
         return true
+      }
     }
     return false
   }
@@ -161,11 +221,15 @@ export class TripFlows {
     const prompts: Record<string, { text: string; buttons: ReturnType<typeof cb>[][] }> = {
       'await:vehicle_plate': { text: 'Госномер машины, например А245КМ116:', buttons: [cancel] },
       'await:vehicle_brand': { text: `Госномер ${esc(String(ctx.plate))}. Марка и модель, например КАМАЗ 65115:`, buttons: [cancel] },
+      'await:vehicle_body': { text: `${esc(String(ctx.brand ?? ''))} ${esc(String(ctx.plate ?? ''))}. Тип кузова:`, buttons: [...pairs(BODY_TYPES.map((b, i) => cb(b, `vb:${i}`))), cancel] },
+      'await:vehicle_capacity': { text: 'Грузоподъёмность в тоннах, например 15:', buttons: [cancel] },
+      'await:vehicle_volume': { text: 'Объём кузова в м³, например 30:', buttons: [cancel] },
       'await:vehicle_ownership': { text: 'Машина собственная или взята в лизинг, аренду? Это указывается в накладной.', buttons: [OWNERSHIP.map((o) => cb(o.text, `own:${o.code}`)), cancel] },
       'await:vehicle_owner': { text: 'Кто владелец машины? Название компании или ФИО:', buttons: [cancel] },
     }
     const pr = prompts[step]!
-    await this.ui.reply(to, { text: `<b>Новая машина</b>\n\n${pr.text}${err}`, buttons: pr.buttons })
+    const title = ctx.fill ? '<b>Машина: данные для накладной</b>' : '<b>Новая машина</b>'
+    await this.ui.reply(to, { text: `${title}\n\n${pr.text}${err}`, buttons: pr.buttons })
   }
 
   private async saveVehicle(p: PersonRow, ctx: Ctx, ownerName: string | null, to: Reply) {
@@ -176,6 +240,9 @@ export class TripFlows {
       brand: String(ctx.brand),
       ownership: ctx.ownership as VehicleOwnership,
       ownerName,
+      bodyType: String(ctx.bodyType),
+      capacityT: Number(ctx.capacityT),
+      volumeM3: Number(ctx.volumeM3),
     })
     await this.askDriver(p, { shipmentId: ctx.shipmentId, vehicleId }, to)
   }
@@ -282,17 +349,26 @@ export class TripFlows {
     await this.flows.afterTransition(res, { personId: p.id, role: 'carrier' })
   }
 
-  // ---------- погрузка и простая подпись ----------
+  // ---------- простая подпись: погрузка, сдача груза, приёмка ----------
 
-  private async loadingButton(p: PersonRow, choice: 'ok' | 'remarks', shipmentId: string, to: Reply) {
-    if (to.kind !== 'callback') return
-    const buttonText = choice === 'ok' ? 'Всё верно, груз принят' : 'Есть замечания'
-    const pending = { shipmentId, choice, callbackId: to.callbackId, mid: to.mid ?? '', buttonText, at: new Date().toISOString() }
-    if (!p.phoneSha256) return this.askPhone(p, pending, to)
-    return this.continueLoading(p, pending, p.phoneSha256, p.maxUserId, to)
+  /** Нажатие с простой подписью: запомнить доказательства, при первой подписи спросить номер. */
+  private async pepButton(p: PersonRow, kind: PepKind, shipmentId: string, to: Reply) {
+    if (to.kind !== 'callback' || !PEP[kind]) return
+    const pending = { shipmentId, kind, callbackId: to.callbackId, mid: to.mid ?? '', buttonText: PEP[kind].button, at: new Date().toISOString() }
+    if (!p.phone || !p.phoneSha256) return this.askPhone(p, pending, to)
+    return this.continuePep(p, pending, p.phoneSha256, p.maxUserId, to)
   }
 
-  private async continueLoading(p: PersonRow, pending: Ctx, phoneSha256: string, maxUserId: number, to: Reply) {
+  private readonly resumers = new Map<string, (p: PersonRow, pending: Ctx, to: Reply) => Promise<unknown>>()
+
+  /** Что продолжить после «Поделиться номером», если его просил другой сценарий (подпись титула). */
+  onPhone(kind: string, fn: (p: PersonRow, pending: Ctx, to: Reply) => Promise<unknown>) {
+    this.resumers.set(kind, fn)
+  }
+
+  private async continuePep(p: PersonRow, pending: Ctx, phoneSha256: string, maxUserId: number, to: Reply) {
+    const resume = this.resumers.get(String(pending.kind))
+    if (resume) return resume(p, pending, to)
     const evidence: PepEvidence = {
       maxUserId,
       phoneSha256,
@@ -302,28 +378,38 @@ export class TripFlows {
       at: String(pending.at),
     }
     const shipmentId = String(pending.shipmentId)
-    if (pending.choice === 'ok') return this.confirmLoading(p, shipmentId, null, evidence, to)
-    await this.store.setDialog(p.id, { step: 'await:loading_remarks', context: { shipmentId, evidence } })
-    await this.ui.reply(to, {
-      text: '<b>Замечания к грузу</b>\n\nОпишите, что не так: недостача, повреждения, не та упаковка. Отправитель увидит это до подписи.',
-      buttons: [[cb('Отмена', S.view(shipmentId))]],
-    })
+    if (pending.kind === 'carrier_accept') return this.flows.run(p, { type: 'carrier.accept', shipmentId, payload: {} }, to)
+    const kind = pending.kind as PepKind
+    const ask = PEP[kind].ask
+    if (!ask) return this.runPep(p, kind, shipmentId, null, evidence, to)
+    await this.store.setDialog(p.id, { step: 'await:pep_text', context: { shipmentId, kind, evidence } })
+    await this.ui.reply(to, { text: ask, buttons: [[cb('Отмена', S.view(shipmentId))]] })
   }
 
-  private async confirmLoading(p: PersonRow, shipmentId: string, remarks: string | null, evidence: PepEvidence, to: Reply) {
-    await this.flows.run(p, { type: 'driver.confirmLoading', shipmentId, payload: { remarks, evidence } }, to)
+  private async runPep(p: PersonRow, kind: PepKind, shipmentId: string, text: string | null, evidence: PepEvidence, to: Reply) {
+    const cmd: Command =
+      kind === 'load_ok' || kind === 'load_rm'
+        ? { type: 'driver.confirmLoading', shipmentId, payload: { remarks: text, evidence } }
+        : kind === 'delivered'
+          ? { type: 'driver.confirmDelivered', shipmentId, payload: { remarks: text, evidence } }
+          : {
+              type: 'consignee.recordAcceptance',
+              shipmentId,
+              payload: { result: kind === 'accept_full' ? 'full' : kind === 'accept_partial' ? 'partial' : 'refused', discrepancies: text, evidence },
+            }
+    await this.flows.run(p, cmd, to)
   }
 
   /** Перед первой подписью — номер телефона кнопкой request_contact, один раз на человека. */
-  private async askPhone(p: PersonRow, pending: Ctx, to: Reply) {
+  async askPhone(p: PersonRow, pending: Ctx, to: Reply) {
     await this.store.setDialog(p.id, { step: 'await:phone', context: { pending } })
     await this.ui.reply(to, {
       text: [
         '<b>Подтвердите номер телефона</b>',
         '',
-        'Это ваша первая подпись в боте. Номер, привязанный к MAX, — доказательство, что подписали именно вы. Спрашиваем один раз.',
+        'Номер, привязанный к MAX, записывается в транспортную накладную и подтверждает, что подписали именно вы. Спрашиваем один раз.',
         '',
-        'Храним не сам номер, а его отпечаток. Передавая номер, вы соглашаетесь на его обработку для подписи документов перевозки.',
+        'Передавая номер, вы соглашаетесь на его обработку для оформления документов перевозки.',
       ].join('\n'),
       buttons: [[{ text: 'Поделиться номером', kind: 'request_contact', payload: '' }], [cb('Отмена', S.view(String(pending.shipmentId)))]],
     })
@@ -343,10 +429,10 @@ export class TripFlows {
       return
     }
     const phoneSha256 = sha256(phone)
-    await this.store.savePhone(p.id, phoneSha256)
+    await this.store.savePhone(p.id, phone, phoneSha256)
     await this.store.clearDialog(p.id)
     await this.ui.reply(to, { text: '✅ Номер подтверждён.' })
-    await this.continueLoading(p, d.context.pending as Ctx, phoneSha256, p.maxUserId, to)
+    await this.continuePep({ ...p, phone, phoneSha256 }, d.context.pending as Ctx, phoneSha256, p.maxUserId, to)
   }
 
   // ---------- экраны ----------

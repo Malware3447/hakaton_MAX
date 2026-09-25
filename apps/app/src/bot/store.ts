@@ -58,9 +58,9 @@ export class BotStore {
     }))
   }
 
-  /** Подтверждённый номер: только отпечаток и время согласия. */
-  async savePhone(personId: string, phoneSha256: string) {
-    await this.db.update(person).set({ phoneSha256, consentAt: new Date() }).where(eq(person.id, personId))
+  /** Подтверждённый номер: сам номер (для накладной), отпечаток (для доказательств подписи) и время согласия. */
+  async savePhone(personId: string, phone: string, phoneSha256: string) {
+    await this.db.update(person).set({ phone, phoneSha256, consentAt: new Date() }).where(eq(person.id, personId))
   }
 
   async setActiveRole(personId: string, role: Role | null) {
@@ -179,6 +179,16 @@ export class BotStore {
       .update(membership)
       .set({ orgId })
       .where(and(eq(membership.personId, personId), eq(membership.role, role), sql`${membership.orgId} is null`))
+  }
+
+  /** Люди организации в роли: администратор первым. */
+  async orgMembers(orgId: string, role: Role) {
+    return this.db
+      .select({ personId: person.id, maxUserId: person.maxUserId, name: person.name })
+      .from(membership)
+      .innerJoin(person, eq(person.id, membership.personId))
+      .where(and(eq(membership.orgId, orgId), eq(membership.role, role)))
+      .orderBy(sql`${membership.isAdmin} desc`, membership.createdAt)
   }
 
   async erpShipmentCount(shipperInn: string): Promise<number> {

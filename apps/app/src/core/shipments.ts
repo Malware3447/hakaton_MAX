@@ -99,6 +99,7 @@ export class ShipmentService {
           loadingAddress: src.loadingAddress,
           unloadingAddress: src.unloadingAddress,
           plannedLoadingAt: src.plannedLoadingAt ? new Date(src.plannedLoadingAt) : null,
+          consigneeContact: { name: src.consignee.contactName ?? null, phone: src.consignee.phone ?? null },
           cargo: { lines: src.lines, places: src.places, grossKg: src.grossKg },
           state: 'draft',
           turn: 'shipper',
@@ -282,6 +283,22 @@ export class ShipmentService {
         await drop('driver')
         break
     }
+  }
+
+  /** Назначить участника вне команд — получатель, который уже есть в боте. */
+  async assignParticipant(shipmentId: string, role: Role, personId: string) {
+    await this.db
+      .insert(participant)
+      .values({ shipmentId, role, personId, source: 'known', joinedAt: new Date() })
+      .onConflictDoUpdate({ target: [participant.shipmentId, participant.role], set: { personId, source: 'known', joinedAt: new Date() } })
+    await this.db.insert(event).values({ shipmentId, type: 'participant.assigned', actorKind: 'system', payload: { role } })
+  }
+
+  /** Приглашение в роль вне команд (получатель, когда машина выехала). Вернёт токен для ссылки. */
+  async inviteRole(shipmentId: string, role: Role, invitedBy: string | null): Promise<string> {
+    return this.db.transaction((tx) =>
+      this.createInvite(tx, shipmentId, { kind: 'invite', role, ref: { invite: { expectedMaxUserId: null, expectedPhoneSha256: null, displayName: null } } }, invitedBy),
+    )
   }
 
   private async createInvite(tx: Tx, shipmentId: string, e: Extract<Effect, { kind: 'invite' }>, invitedBy: string | null) {
