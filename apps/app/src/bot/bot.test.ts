@@ -15,6 +15,7 @@ import { InviteService } from '../core/invite-service.ts'
 import { FleetService } from '../core/fleet.ts'
 import { CardStore } from './card-store.ts'
 import { TitleService } from '../core/titles.ts'
+import { MockOperator } from '../core/mock-operator.ts'
 import { SignatureService, type SignatureVerification } from '../core/signatures.ts'
 import { decode1251 } from '@nk/etrn'
 import { validateTitle } from '../../../../packages/etrn/src/testing/xsd.ts'
@@ -764,6 +765,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
   describe('подпись накладной', () => {
     const shipmentOf = async (ref: string) => (await conn.db.select().from(shipment).where(eq(shipment.erpRef, ref)))[0]!.id
+    const operator = () => new MockOperator(conn.db, svc, new TitleService(conn.db), (res) => bot.afterSystemTransition(res), 0)
     let id = ''
 
     it('ОТГ-1057 доходит до «груз у водителя»: водитель по приглашению, номер, погрузка', async () => {
@@ -823,10 +825,13 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
     })
 
-    it('перевозчик: без номера накладной от оператора Т2 не собрать; с номером — XML Т2 по схеме, демо-подпись', async () => {
+    it('перевозчик: без номера накладной от оператора Т2 не собрать; оператор выдал — XML Т2 по схеме, демо-подпись', async () => {
       await act(press(3, `sg:T2:${id}`))
       expect(out.last?.text).toMatch(/оператор ещё не выдал номер накладной/)
-      await conn.db.update(shipment).set({ uid: 'a5b0c7e2-3f4d-4e21-9c8b-1d2e3f4a5b6c' }).where(eq(shipment.id, id))
+      // Модель оператора: в ответ на Т1 — номер накладной (в работе это делает очередь по submitTitle)
+      await operator().submit(id, 'T1')
+      const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
+      expect(s!.uid).toMatch(/^[0-9a-f-]{36}$/)
       await act(press(3, `sg:T2:${id}`))
       const t2 = out.sentLog.filter((s) => s.userId === 3 && s.m.file).at(-1)!.m.file!
       expect((await validateTitle('T2', t2.bytes)).errors).toEqual([])
@@ -834,6 +839,20 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(decode1251(t2.bytes)).toContain(`ЭП="${Buffer.from([1, 2, 3]).toString('base64')}"`)
       await act(press(3, `sgd:T2:${id}`))
       expect(out.last?.text).toMatch(/регистрируется в ГИС ЭПД/)
+    })
+
+    it('Т2 у оператора: регистрация в ГИС ЭПД → «в пути», водителю «ваш ход» и QR-код файлом', async () => {
+      const before = out.inbox.get(801)!.length
+      await operator().submit(id, 'T2')
+      const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
+      expect(s!.state).toBe('in_transit')
+      await bot.sendQrToDriver(id)
+      const toDriver = out.inbox.get(801)!.slice(before)
+      expect(toDriver.some((m) => /Сейчас ваш ход/.test(m.text) && buttons(m).includes('Я на выгрузке'))).toBe(true)
+      const qr = toDriver.find((m) => m.file)!
+      expect(qr.file!.name).toBe('QR-ОТГ-2026-1057.png')
+      expect(Buffer.from(qr.file!.bytes.slice(1, 4)).toString()).toBe('PNG')
+      expect(qr.text).toMatch(/Модель ГИС ЭПД/)
     })
   })
 })

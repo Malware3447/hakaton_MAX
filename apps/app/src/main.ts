@@ -10,6 +10,7 @@ import { InviteService } from './core/invite-service.ts'
 import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
+import { MockOperator } from './core/mock-operator.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -50,6 +51,7 @@ if (env.DATABASE_URL) {
         : undefined
 
     const shipments = new ShipmentService(db, erp, directory, jobs)
+    const titles = new TitleService(db)
     const bot = new Bot(
       new BotStore(db),
       messenger,
@@ -60,7 +62,7 @@ if (env.DATABASE_URL) {
       jobs,
       cards,
       // Проверка подписи «Госключа» — модуль Егора (HAKATON-41); до слияния — только демо-подпись
-      { titles: new TitleService(db), signatures: new SignatureService(db), verifier: null },
+      { titles, signatures: new SignatureService(db), verifier: null },
       env.MAX_BOT_TOKEN,
       me.username,
       app.log,
@@ -74,6 +76,10 @@ if (env.DATABASE_URL) {
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
 
     jobs.onEffect('inviteConsignee', (id) => bot.consigneeArrival(id))
+    jobs.onEffect('sendQrToDriver', (id) => bot.sendQrToDriver(id))
+    // Модель оператора ЭПД: номер накладной после Т1, регистрация в ГИС ЭПД после Т2
+    const operator = new MockOperator(db, shipments, titles, (res) => bot.afterSystemTransition(res))
+    jobs.onEffect('submitTitle', (id, e) => (e.kind === 'submitTitle' ? operator.submit(id, e.title) : Promise.resolve()))
 
     // Все обновления — через inbox: повторы MAX отсекаются, упавшие повторяются раз в минуту
     const inbox = new Inbox(db, (u) => bot.handle(u), app.log)

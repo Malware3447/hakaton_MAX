@@ -45,10 +45,10 @@ export class Jobs implements Outbox, EffectSink {
     private readonly log: FastifyBaseLogger,
   ) {}
 
-  private readonly effectHandlers = new Map<Effect['kind'], (shipmentId: string) => Promise<unknown>>()
+  private readonly effectHandlers = new Map<Effect['kind'], (shipmentId: string, effect: Effect) => Promise<unknown>>()
 
-  /** Обработчик последствия, которое делает бот (приглашение получателю и т. п.). */
-  onEffect(kind: Effect['kind'], fn: (shipmentId: string) => Promise<unknown>) {
+  /** Обработчик последствия: оператор, QR, приглашение получателю. */
+  onEffect(kind: Effect['kind'], fn: (shipmentId: string, effect: Effect) => Promise<unknown>) {
     this.effectHandlers.set(kind, fn)
   }
 
@@ -163,7 +163,7 @@ export class Jobs implements Outbox, EffectSink {
       }
       default: {
         const handler = this.effectHandlers.get(effect.kind)
-        if (handler) return void (await handler(shipmentId))
+        if (handler) return void (await handler(shipmentId, effect))
         // submitTitle, sendQrToDriver — подключаются с оператором и накладной (HAKATON-35, 39)
         this.log.info({ shipmentId, effect: effect.kind }, 'последствие ждёт реализации')
       }

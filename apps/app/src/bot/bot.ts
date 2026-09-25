@@ -5,7 +5,7 @@ import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
 import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
 import { STATE_TEXT } from './cards.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
-import type { ShipmentService } from '../core/shipments.ts'
+import type { ExecResult, ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
 import { ShipmentFlows, type Reply } from './shipment-flows.ts'
 import { TripFlows } from './trip-flows.ts'
@@ -105,6 +105,16 @@ export class Bot {
   /** Последствие inviteConsignee из очереди: позвать получателя, когда машина выехала. */
   consigneeArrival(shipmentId: string) {
     return this.flows.consigneeArrival(shipmentId)
+  }
+
+  /** QR-код водителю после регистрации накладной (последствие sendQrToDriver). */
+  sendQrToDriver(shipmentId: string) {
+    return this.flows.sendQrToDriver(shipmentId)
+  }
+
+  /** Переход по ответу системы (оператор): уведомить того, чей ход, и перерисовать карточки. */
+  afterSystemTransition(res: Extract<ExecResult, { ok: true }>) {
+    return this.flows.afterTransition(res, { personId: '', role: 'shipper' })
   }
 
   async handle(u: MaxUpdate): Promise<void> {

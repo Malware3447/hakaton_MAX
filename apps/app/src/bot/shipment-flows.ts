@@ -10,6 +10,7 @@ import type { Outbox } from './outbox.ts'
 import { S, cb } from './screens.ts'
 import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
 import { ROLE_TITLE } from './screens.ts'
+import QRCode from 'qrcode'
 import { MOVED_CARD, renderHash, type CardStore } from './card-store.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 
@@ -355,6 +356,26 @@ export class ShipmentFlows {
       })
       .catch((err) => this.log.warn({ err }, 'не удалось написать пригласившему'))
     return this.ui.reply(to, { text: 'Попросили новую ссылку у того, кто вас приглашал. Когда он её пришлёт — откройте.', buttons: [[cb('В меню', 'root')]] })
+  }
+
+  // ---------- QR-код водителю (модель ГИС ЭПД) ----------
+
+  /** После регистрации накладной: QR-код для проверки на дороге — водителю файлом в чат. */
+  async sendQrToDriver(shipmentId: string) {
+    const view = await this.shipments.view(shipmentId, 'driver')
+    const driver = await this.shipments.participantOf(shipmentId, 'driver')
+    if (!view?.uid || !driver) return
+    const png = await QRCode.toBuffer(JSON.stringify({ uid: view.uid, number: view.erpRef, model: true }), { type: 'png', width: 512, margin: 2 })
+    await this.messenger
+      .send(
+        driver.maxUserId,
+        {
+          text: `QR-код накладной ${esc(view.erpRef)}. Покажите его на проверке на дороге — файл открывается без сети. <i>Модель ГИС ЭПД.</i>`,
+          file: { name: `QR-${view.erpRef}.png`, bytes: new Uint8Array(png) },
+        },
+        { shipmentId },
+      )
+      .catch((err) => this.log.warn({ err }, 'не удалось отправить QR водителю'))
   }
 
   // ---------- получатель, когда машина выехала ----------
