@@ -14,6 +14,7 @@ import { Jobs } from './jobs/jobs.ts'
 import { MaxApi } from './max/api.ts'
 import { MaxMessenger } from './max/messenger.ts'
 import { startPolling } from './max/polling.ts'
+import { Inbox } from './bot/inbox.ts'
 
 const env = loadEnv()
 const deps: AppDeps = {}
@@ -40,8 +41,6 @@ if (env.DATABASE_URL) {
       env.MAX_MODE === 'webhook' && env.PUBLIC_URL && env.MAX_WEBHOOK_SECRET
         ? { api, url: new URL('/bot/webhook', env.PUBLIC_URL).toString(), secret: env.MAX_WEBHOOK_SECRET }
         : undefined
-    await jobs.start({ webhook })
-    stops.unshift(() => jobs.stop())
 
     const shipments = new ShipmentService(db, erp, directory, jobs)
     const bot = new Bot(
@@ -65,11 +64,16 @@ if (env.DATABASE_URL) {
       ])
       .catch((err) => app.log.warn({ err }, 'не удалось задать команды бота'))
 
+    // Все обновления — через inbox: повторы MAX отсекаются, упавшие повторяются раз в минуту
+    const inbox = new Inbox(db, (u) => bot.handle(u), app.log)
+    await jobs.start({ webhook, inboxRetry: () => inbox.retryPending() })
+    stops.unshift(() => jobs.stop())
+
     if (env.MAX_MODE === 'polling') {
-      stops.unshift(startPolling(api, (u) => bot.handle(u), app.log))
+      stops.unshift(startPolling(api, (u) => inbox.ingest(u), app.log))
       app.log.info('бот слушает MAX в режиме polling')
     } else {
-      deps.onUpdate = (u) => bot.handle(u)
+      deps.onUpdate = (u) => inbox.ingest(u)
     }
   }
 } else {

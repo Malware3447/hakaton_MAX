@@ -27,8 +27,8 @@ export function buildApp(env: Env, deps: AppDeps = {}): FastifyInstance {
 
   app.get('/healthz', async () => ({ ok: true, maxMode: env.MAX_MODE, domain: DOMAIN_VERSION }))
 
-  // Вебхук MAX: проверяем секрет, отвечаем 200 сразу, обрабатываем после.
-  // Запись в inbox с дедупликацией и повторами — HAKATON-25.
+  // Вебхук MAX: проверяем секрет, отвечаем 200 сразу (не позже 30 секунд, иначе MAX повторит),
+  // обрабатываем после — через inbox с дедупликацией (bot/inbox.ts).
   app.post('/bot/webhook', async (req, reply) => {
     if (env.MAX_MODE !== 'webhook') return reply.code(404).send()
     const secret = req.headers['x-max-bot-api-secret']

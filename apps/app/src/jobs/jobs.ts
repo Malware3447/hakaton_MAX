@@ -15,7 +15,7 @@ import { MaxApiError } from '../max/api.ts'
 // effect — последствия переходов, которые требуют внешних систем (учётка, оператор, QR);
 // subscription-check — самопроверка вебхука раз в 10 минут.
 
-export const Q = { notify: 'notify', edit: 'edit', effect: 'effect', subscription: 'subscription-check' } as const
+export const Q = { notify: 'notify', edit: 'edit', effect: 'effect', subscription: 'subscription-check', inboxRetry: 'inbox-retry' } as const
 
 interface NotifyJob extends NotifyMeta {
   userId: number
@@ -49,7 +49,7 @@ export class Jobs implements Outbox, EffectSink {
     return new PgBoss({ connectionString: url, schema: 'pgboss' })
   }
 
-  async start(opts: { webhook?: { api: MaxApi; url: string; secret: string } } = {}) {
+  async start(opts: { webhook?: { api: MaxApi; url: string; secret: string }; inboxRetry?: () => Promise<unknown> } = {}) {
     this.boss.on('error', (err) => this.log.error({ err }, 'pg-boss'))
     await this.boss.start()
     await this.boss.createQueue(Q.notify, { retryLimit: 5, retryDelay: 2, retryBackoff: true })
@@ -64,6 +64,14 @@ export class Jobs implements Outbox, EffectSink {
     await this.boss.work<EffectJob>(Q.effect, { pollingIntervalSeconds: 0.5 }, async (jobs) => {
       for (const j of jobs) await this.runEffect(j.data)
     })
+    if (opts.inboxRetry) {
+      const retry = opts.inboxRetry
+      await this.boss.createQueue(Q.inboxRetry)
+      await this.boss.work(Q.inboxRetry, async () => {
+        await retry()
+      })
+      await this.boss.schedule(Q.inboxRetry, '* * * * *')
+    }
     if (opts.webhook) {
       const wh = opts.webhook
       await this.boss.createQueue(Q.subscription)
