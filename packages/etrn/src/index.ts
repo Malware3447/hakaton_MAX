@@ -2,3 +2,6 @@
 // Наполняется в HAKATON-35 (XML) и HAKATON-36 (подписи).
 
 export const ETRN_FORMAT_VERSION = '5.01'
+
+export * from './titles.ts'
+export { decode1251, encode1251, fmtDate, fmtDateTime, fmtTime } from './format.ts'
