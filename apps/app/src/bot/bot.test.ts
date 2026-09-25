@@ -394,4 +394,23 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/КАМАЗ 65115 А245КМ116, собственная[\s\S]*МАЗ 5440 В123ОР116, лизинг, владелец ООО «Лизинг-Центр»[\s\S]*Человек 4[\s\S]*Человек 600/)
     })
   })
+
+  describe('один человек в двух ролях', () => {
+    it('перевозчик назначает водителем себя — «Вам назначен рейс» приходит ему же как водителю', async () => {
+      await act(press(3, 'add:driver'))
+      await openRef(act, out, '1047')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, 'nvh'))
+      await act(text(3, 'Е777КХ116'))
+      await act(text(3, 'ГАЗон Next'))
+      await act(press(3, 'own:own'))
+      const before = out.inbox.get(3)!.length
+      await act(contact(3, { user_id: 3, first_name: 'Олег' }))
+      const mine = out.inbox.get(3)!.slice(before)
+      expect(mine.some((m) => /Вам назначен рейс/.test(m.text))).toBe(true)
+    })
+  })
 })

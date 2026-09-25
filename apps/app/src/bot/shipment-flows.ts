@@ -204,7 +204,7 @@ export class ShipmentFlows {
         ].join('\n')
       : `Заявка отправлена: ${esc(name)}.`
     await this.showCard(p, shipmentId, to, note)
-    await this.afterTransition(res, p.id)
+    await this.afterTransition(res, { personId: p.id, role: 'shipper' })
     return true
   }
 
@@ -336,7 +336,7 @@ export class ShipmentFlows {
     const res = await this.shipments.execute(cmd, { kind: 'person', personId: p.id, role: byOf(cmd.type) })
     if (!res.ok) return this.failed(res, to)
     await this.showCard(p, cmd.shipmentId, to)
-    await this.afterTransition(res, p.id)
+    await this.afterTransition(res, { personId: p.id, role: byOf(cmd.type) })
   }
 
   private async decline(p: PersonRow, d: DialogState, reason: string, to: Reply) {
@@ -349,15 +349,19 @@ export class ShipmentFlows {
     // Отказавшийся больше не участник — карточку ему не показываем
     const text = role === 'carrier' ? 'Заявка отклонена, отправитель получит причину.' : 'Вы отказались от рейса, перевозчик получит причину.'
     await this.ui.reply(to, { text, buttons: [[cb('В меню', `open:${role}`)]] })
-    await this.afterTransition(res, p.id, reason)
+    await this.afterTransition(res, { personId: p.id, role }, reason)
   }
 
   async failed(res: Extract<ExecResult, { ok: false }>, to: Reply) {
     await this.ui.notify(to, FAIL_TEXT[res.code] ?? res.message)
   }
 
-  /** «Ваш ход» тому, чья очередь теперь; живые карточки остальным — HAKATON-28. */
-  async afterTransition(res: Extract<ExecResult, { ok: true }>, actorPersonId: string, reason?: string) {
+  /**
+   * «Ваш ход» тому, чья очередь теперь; живые карточки остальным — HAKATON-28.
+   * Один человек бывает в перевозке в двух ролях (отправитель и водитель): молчим, только если
+   * ход остался у той же роли, что нажала кнопку.
+   */
+  async afterTransition(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
     const send = (userId: number, msg: OutMessage) =>
       this.messenger.send(userId, msg).catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
 
@@ -365,13 +369,13 @@ export class ShipmentFlows {
     if (res.to === 'carrier_accepted' && res.from === 'offered') {
       const shipper = await this.shipments.participantOf(res.shipmentId, 'shipper')
       const view = await this.shipments.view(res.shipmentId, 'shipper')
-      if (shipper && view && shipper.personId !== actorPersonId)
+      if (shipper && view)
         await send(shipper.maxUserId, { text: `✅ Перевозчик ${esc(view.carrier?.name ?? '')} принял заявку ${esc(view.erpRef)}.`, buttons: [[cb('Открыть', S.view(res.shipmentId))]] })
     }
 
     if (!res.turn) return
     const target = await this.shipments.participantOf(res.shipmentId, res.turn)
-    if (!target || target.personId === actorPersonId) return
+    if (!target || (target.personId === actor.personId && res.turn === actor.role)) return
     const view = await this.shipments.view(res.shipmentId, res.turn)
     if (!view) return
     const note =

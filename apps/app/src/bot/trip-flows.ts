@@ -252,7 +252,7 @@ export class TripFlows {
       }
     }
     await this.flows.showCard(p, shipmentId, to, note)
-    await this.flows.afterTransition(res, p.id)
+    await this.flows.afterTransition(res, { personId: p.id, role: 'carrier' })
   }
 
   // ---------- погрузка и простая подпись ----------
