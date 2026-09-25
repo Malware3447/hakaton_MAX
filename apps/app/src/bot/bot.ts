@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
 import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
+import { STATE_TEXT } from './cards.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 import type { ShipmentService } from '../core/shipments.ts'
 import type { InviteService } from '../core/invite-service.ts'
@@ -153,7 +154,13 @@ export class Bot {
     if (!r) return this.showRoot(p, to)
     if (p.activeRole !== role) await this.store.setActiveRole(p.id, role)
     const erpShipments = r.role === 'shipper' && r.org ? await this.store.erpShipmentCount(r.org.inn) : undefined
-    return this.reply(to, roleMenu(r, { erpShipments, note, ...(await this.flows.counts(p.id, role)) }))
+    const counts = await this.flows.counts(p.id, role)
+    let trip: { erpRef: string; stateText: string; yourTurn: boolean } | null = null
+    if (role === 'driver') {
+      const t = await this.flows.activeTrip(p.id)
+      if (t) trip = { erpRef: t.erpRef, stateText: STATE_TEXT[t.state], yourTurn: counts.waiting > 0 }
+    }
+    return this.reply(to, roleMenu(r, { erpShipments, note, trip, ...counts }))
   }
 
   // ---------- входящие ----------

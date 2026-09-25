@@ -79,6 +79,8 @@ export interface RoleMenuExtra {
   erpShipments?: number
   waiting?: number
   offers?: number
+  /** текущий рейс водителя */
+  trip?: { erpRef: string; stateText: string; yourTurn: boolean } | null
 }
 
 export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
@@ -116,9 +118,11 @@ export function roleMenu(r: RoleInfo, extra: RoleMenuExtra = {}): OutMessage {
         text: [
           ...head,
           '',
-          r.org
-            ? 'Рейсов пока нет.'
-            : 'Чтобы получить рейс, попросите диспетчера перевозчика назначить вас: он перешлёт боту ваш контакт.',
+          extra.trip
+            ? `Текущий рейс: <b>${esc(extra.trip.erpRef)}</b> — ${extra.trip.stateText}.${extra.trip.yourTurn ? '\n<b>Сейчас ваш ход</b> — откройте рейс.' : ''}`
+            : r.org
+              ? 'Активного рейса нет. Когда перевозчик назначит вас, рейс придёт сюда.'
+              : 'Чтобы получить рейс, попросите диспетчера перевозчика назначить вас: он перешлёт боту ваш контакт.',
         ].join('\n'),
         buttons: [[cb('Открыть рейс', 'trip')], stub('QR-код', 'driver.qr'), [cb('Мои рейсы', 'trips')], switchRole],
       }

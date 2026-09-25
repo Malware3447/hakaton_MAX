@@ -511,8 +511,18 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(500, 'adr:self'))
       const texts = (out.inbox.get(500) ?? []).slice(before).map((m) => m.text)
       expect(texts.some((x) => /Вам назначен рейс/.test(x))).toBe(true)
+
+      // Находка 25.09: после «Принять рейс» карточка должна остаться водительской, с «Я на погрузке»,
+      // хотя текущей ролью у человека был перевозчик
+      const trip = out.sentLog.filter((s) => s.userId === 500 && /Вам назначен рейс/.test(s.m.text)).at(-1)!
+      await act(pressIn(500, payloadOf(trip.m, 'Принять рейс'), trip.mid))
+      expect(buttons(out.last)).toContain('Я на погрузке')
+
+      // и меню водителя показывает этот рейс, а не «рейсов нет»
+      await act(press(500, 'open:driver'))
+      expect(out.last?.text).toMatch(/Текущий рейс: <b>ОТГ-2026-1044<\/b> — водитель едет на погрузку[\s\S]*Сейчас ваш ход/)
       await act(text(500, '/menu'))
-      expect(buttons(out.last)).toContain('Водитель · ООО «Челны-Транс»')
+      expect(buttons(out.last)).toContain('✓ Водитель · ООО «Челны-Транс»')
     })
 
     it('водитель другого перевозчика не может назначить себя', async () => {

@@ -57,6 +57,12 @@ export class ShipmentFlows {
     private readonly log: FastifyBaseLogger,
   ) {}
 
+  /** Текущий рейс водителя — для шапки его меню. */
+  async activeTrip(personId: string) {
+    const list = await this.shipments.listFor(personId, 'driver')
+    return list.find((s) => s.state !== 'closed' && s.state !== 'cancelled') ?? null
+  }
+
   /** Счётчики для шапки меню роли. */
   async counts(personId: string, role: Role) {
     const waiting = (await this.shipments.waiting(personId, role)).length
@@ -361,10 +367,19 @@ export class ShipmentFlows {
     await this.showCard(p, id, to)
   }
 
-  /** Карточка в роли, от которой человек сейчас работает; если он в перевозке в другой роли — в ней. */
-  async showCard(p: PersonRow, shipmentId: string, to: Reply, note?: string) {
+  /**
+   * Карточка перевозки для человека. Роль: явно заданная (тот, кто нажал), иначе та, чей сейчас ход,
+   * если она у человека есть, иначе текущая, иначе первая. Так у человека в двух ролях
+   * (перевозчик и сам водитель) в карточке всегда кнопки того шага, который ждёт его.
+   */
+  async showCard(p: PersonRow, shipmentId: string, to: Reply, note?: string, prefer?: Role) {
     const roles = await this.shipments.rolesIn(shipmentId, p.id)
-    const role = roles.find((r) => r === p.activeRole) ?? roles[0]
+    const turn = (await this.shipments.view(shipmentId, 'shipper'))?.turn ?? null
+    const role =
+      (prefer && roles.includes(prefer) ? prefer : undefined) ??
+      (turn && roles.includes(turn) ? turn : undefined) ??
+      roles.find((r) => r === p.activeRole) ??
+      roles[0]
     if (!role) return this.ui.notify(to, 'Вы не участник этой перевозки')
     const view = await this.shipments.view(shipmentId, role)
     if (!view) return this.ui.notify(to, 'Перевозка не найдена')
@@ -422,7 +437,9 @@ export class ShipmentFlows {
   async run(p: PersonRow, cmd: Command, to: Reply) {
     const res = await this.shipments.execute(cmd, { kind: 'person', personId: p.id, role: byOf(cmd.type) })
     if (!res.ok) return this.failed(res, to)
-    await this.showCard(p, cmd.shipmentId, to)
+    // Карточку показываем в роли, которая нажала, а если ход остался за этим же человеком в другой роли — в ней
+    const next = res.turn && (await this.shipments.rolesIn(cmd.shipmentId, p.id)).includes(res.turn) ? res.turn : byOf(cmd.type)
+    await this.showCard(p, cmd.shipmentId, to, undefined, next)
     await this.afterTransition(res, { personId: p.id, role: byOf(cmd.type) })
   }
 
