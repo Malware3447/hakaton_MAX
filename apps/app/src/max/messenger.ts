@@ -21,17 +21,21 @@ export function toBody(m: OutMessage): NewMessageBody {
   return { text: m.text, format: 'html', attachments }
 }
 
+/** Картинки (в том числе анимированный GIF с QR) шлём как image — в чате они видны сразу, а не значком файла. */
+const IMAGE_EXT = /\.(gif|png|jpe?g)$/i
+
 export class MaxMessenger implements Messenger {
   constructor(private readonly api: MaxApi) {}
 
-  /** Файл в MAX — единственное вложение сообщения: файл и кнопки уходят двумя сообщениями. */
+  /** Вложение (файл или картинка) и кнопки уходят двумя сообщениями: файл в MAX — единственное вложение сообщения. */
   async send(maxUserId: number, message: OutMessage) {
     if (!message.file) return { mid: await this.api.sendToUser(maxUserId, toBody(message)) }
-    const token = await this.api.uploadFile(message.file.name, message.file.bytes)
+    const type = IMAGE_EXT.test(message.file.name) ? 'image' : 'file'
+    const token = await this.api.upload(type, message.file.name, message.file.bytes)
     const fileMid = await this.api.sendToUser(maxUserId, {
       text: message.buttons?.length ? null : message.text,
       format: 'html',
-      attachments: [{ type: 'file', payload: { token } }],
+      attachments: [{ type, payload: { token } }],
     })
     if (!message.buttons?.length) return { mid: fileMid }
     return { mid: await this.api.sendToUser(maxUserId, toBody({ text: message.text, buttons: message.buttons })) }

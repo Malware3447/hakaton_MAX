@@ -85,16 +85,19 @@ export class MaxApi {
     return this.call<{ success: boolean }>('PUT', '/messages', { message_id: mid }, body)
   }
 
-  /** Загрузить файл: POST /uploads?type=file даёт адрес, туда multipart с полем data; в ответ токен вложения. */
-  async uploadFile(name: string, bytes: Uint8Array): Promise<string> {
-    const ep = await this.call<{ url: string; token?: string }>('POST', '/uploads', { type: 'file' })
+  /**
+   * Загрузить вложение: POST /uploads?type=… даёт адрес, туда multipart с полем data; в ответ токен вложения.
+   * Для file токен лежит в корне ответа, для image — в photos[<id>].token. GIF как image приходит в чат картинкой.
+   */
+  async upload(type: 'file' | 'image', name: string, bytes: Uint8Array): Promise<string> {
+    const ep = await this.call<{ url: string; token?: string }>('POST', '/uploads', { type })
     const form = new FormData()
     form.append('data', new Blob([bytes]), name)
     const res = await fetch(ep.url, { method: 'POST', headers: { Authorization: this.token }, body: form, signal: AbortSignal.timeout(60_000) })
-    if (!res.ok) throw new MaxApiError(res.status, undefined, `загрузка файла: ${res.status}`)
-    const info = (await res.json().catch(() => ({}))) as { token?: string }
-    const token = info.token ?? ep.token
-    if (!token) throw new MaxApiError(500, undefined, 'загрузка файла: нет токена вложения')
+    if (!res.ok) throw new MaxApiError(res.status, undefined, `загрузка ${type}: ${res.status}`)
+    const info = (await res.json().catch(() => ({}))) as { token?: string; photos?: Record<string, { token?: string }> }
+    const token = info.token ?? Object.values(info.photos ?? {})[0]?.token ?? ep.token
+    if (!token) throw new MaxApiError(500, undefined, `загрузка ${type}: нет токена вложения`)
     return token
   }
 
