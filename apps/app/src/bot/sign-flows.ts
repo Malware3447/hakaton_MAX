@@ -7,6 +7,7 @@ import { TitleError, type TitleService } from '../core/titles.ts'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment } from '../max/types.ts'
 import { S, cb } from './screens.ts'
+import { DONE } from './guidance.ts'
 import type { Reply, ShipmentFlows, Ui } from './shipment-flows.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 
@@ -138,7 +139,8 @@ export class SignFlows {
       verifyResult: `«Госключ», ${res.level === 'ukep' ? 'УКЭП' : 'УНЭП'}: ${res.checks.map((c) => `${c.name} ok`).join(', ')}`,
     })
     await this.store.clearDialog(p.id)
-    await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to)
+    const who = [res.signer?.fullName, res.level === 'ukep' ? 'УКЭП' : 'УНЭП'].filter(Boolean).join(', ')
+    await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to, `✅ <b>Подпись «Госключа» проверена</b> (${esc(who)}). ${DONE[spec.command] ?? ''}`.trim())
     return true
   }
 
@@ -158,7 +160,7 @@ export class SignFlows {
       throw err
     }
     await this.store.clearDialog(p.id)
-    await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to)
+    await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to, `✅ <b>Демо-подпись принята</b> (модель). ${DONE[spec.command] ?? ''}`.trim())
   }
 
   private async download(url: string): Promise<Uint8Array> {

@@ -23,6 +23,10 @@ class RecordingMessenger implements Messenger {
     return { mid: 'm' }
   }
   async edit() {}
+  deleted: string[] = []
+  async delete(mid: string) {
+    this.deleted.push(mid)
+  }
   async answerCallback() {}
 }
 

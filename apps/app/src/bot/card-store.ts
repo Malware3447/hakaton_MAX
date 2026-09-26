@@ -30,6 +30,12 @@ export class CardStore {
     return old && old.mid !== mid ? old.mid : null
   }
 
+  /** Человек ушёл из карточки в меню: карточка удаляется — забыть её. Вернёт true, если это была карточка. */
+  async forget(personId: string, mid: string): Promise<boolean> {
+    const gone = await this.db.delete(card).where(and(eq(card.personId, personId), eq(card.mid, mid))).returning({ mid: card.mid })
+    return gone.length > 0
+  }
+
   async setHash(shipmentId: string, personId: string, hash: string) {
     await this.db
       .update(card)

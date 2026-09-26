@@ -113,6 +113,10 @@ export class MaxApi {
     return this.call<{ success: boolean }>('DELETE', '/subscriptions', { url })
   }
 
+  deleteMessage(mid: string) {
+    return this.call<{ success: boolean }>('DELETE', '/messages', { message_id: mid })
+  }
+
   answerCallback(callbackId: string, answer: { message?: NewMessageBody; notification?: string }) {
     return this.call<{ success: boolean }>('POST', '/answers', { callback_id: callbackId }, answer)
   }

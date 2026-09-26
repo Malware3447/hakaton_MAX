@@ -52,6 +52,10 @@ class FakeMessenger implements Messenger {
   async edit(mid: string, m: OutMessage) {
     this.edits.set(mid, m)
   }
+  deleted: string[] = []
+  async delete(mid: string) {
+    this.deleted.push(mid)
+  }
   async answerCallback(_: string, n: string | null, m?: OutMessage) {
     this.lastNotification = n
     if (m) this.last = m
@@ -150,6 +154,13 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
   const act = (u: MaxUpdate) => {
     out.current = actorOf(u)
     return bot.handle(u)
+  }
+  /** Последнее уведомление «🔔/ℹ️ …» человеку → «Открыть» → его карточка (решение 26.09). */
+  const openLast = async (u: number) => {
+    const notice = [...(out.inbox.get(u) ?? [])].reverse().find((m) => (m.buttons ?? []).flat().some((b) => b.text === 'Открыть'))
+    if (!notice) throw new Error(`у ${u} нет уведомления с «Открыть»`)
+    await act(pressIn(u, payloadOf(notice, 'Открыть'), `notice-${u}`))
+    return out.last!
   }
 
   beforeAll(async () => {
@@ -279,8 +290,12 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     it('контакт перевозчика — заявка уходит ему, у него «ждут меня: 1»', async () => {
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
       expect(out.last?.text).toMatch(/Заявка отправлена: Олег[\s\S]*заявка у перевозчика/)
-      const offer = out.inbox.get(3)!.at(-1)!
-      expect(offer.text).toMatch(/Новая заявка.*Волжский/)
+      // Решение 26.09: тому, чей ход, — короткая инструкция и «Открыть», а не карточка целиком
+      const notice = out.inbox.get(3)!.at(-1)!
+      expect(notice.text).toMatch(/🔔 <b>Перевозка ОТГ-2026-1040<\/b>\n.*Волжский.*предлагает перевезти груз/)
+      expect(buttons(notice)).toEqual(['Открыть'])
+      const offer = await openLast(3)
+      expect(offer.text).toMatch(/Что сделать:.*примите заявку/)
       expect(buttons(offer)).toEqual(['Принять заявку', 'Отклонить', 'Обновить', 'В меню'])
       await act(press(3, 'open:carrier'))
       expect(buttons(out.last)).toContain('Ждут меня (1)')
@@ -288,13 +303,14 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     })
 
     it('перевозчик принимает — отправителю приходит «принял», двойное нажатие безвредно', async () => {
-      const offer = out.inbox.get(3)!.at(-1)!
+      const offer = await openLast(3)
       await act(pressIn(3, payloadOf(offer, 'Принять')))
       // Решение 25.09: телефон перевозчика нужен уже в Т1 — спрашиваем при первом «Принять заявку»
       expect(out.last?.text).toMatch(/Подтвердите номер телефона[\s\S]*записывается в транспортную накладную/)
       await act(ownPhone(3, '79170001122'))
       expect(out.last?.text).toMatch(/перевозчик назначает машину и водителя/)
-      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/принял заявку ОТГ-2026-1040/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/ℹ️ <b>Перевозка ОТГ-2026-1040<\/b>\nПеревозчик .* принял заявку/)
+      expect(out.last?.text).toMatch(/✅ Заявка принята/)
       await act(press(3, payloadOf(offer, 'Принять')))
       expect(out.lastNotification).toBe('Уже сделано')
     })
@@ -304,12 +320,13 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(1, payloadOf(out.last, '1041')))
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
-      const offer = out.inbox.get(3)!.at(-1)!
+      const offer = await openLast(3)
       await act(press(3, payloadOf(offer, 'Отклонить')))
       await act(text(3, 'Машина в ремонте'))
       expect(out.last?.text).toMatch(/Заявка отклонена/)
-      const back = out.inbox.get(1)!.at(-1)!
-      expect(back.text).toMatch(/отклонил заявку: Машина в ремонте[\s\S]*ждёт назначения перевозчика/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Перевозчик отклонил заявку: Машина в ремонте\. Назначьте другого/)
+      const back = await openLast(1)
+      expect(back.text).toMatch(/ждёт назначения перевозчика/)
       expect(buttons(back)).toContain('Назначить перевозчика')
     })
 
@@ -406,14 +423,19 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Водитель на рейс/)
       await act(contact(3, { user_id: 4, first_name: 'Иван' }))
       expect(out.last?.text).toMatch(/Машина и водитель назначены[\s\S]*КАМАЗ 65115 А245КМ116, водитель: Человек 4/)
-      const trip = out.inbox.get(4)!.at(-1)!
-      expect(trip.text).toMatch(/Вам назначен рейс/)
+      expect(out.inbox.get(4)!.at(-1)!.text).toMatch(/Вам назначен рейс от ООО «ГрузЛайн-Казань»\. Примите его/)
+      const trip = await openLast(4)
       expect(buttons(trip)).toEqual(['Принять рейс', 'Отказаться от рейса', 'Обновить', 'В меню'])
     })
 
     it('водитель: принять рейс → на погрузке → всё верно → номер один раз → ход отправителя', async () => {
       await act(press(4, 'trip'))
       await act(press(4, payloadOf(out.last, 'Принять рейс')))
+      expect(out.last?.text).toMatch(/✅ Рейс принят[\s\S]*Что сделать:.*«Я на погрузке»/)
+      // Остальным, кого шаг касается, — что произошло, с «Открыть» (решение 26.09)
+      const info = out.inbox.get(3)!.at(-1)!
+      expect(info.text).toMatch(/ℹ️ <b>Перевозка ОТГ-2026-1040<\/b>\nВодитель Человек 4 принял рейс/)
+      expect(buttons(info)).toEqual(['Открыть'])
       await act(press(4, payloadOf(out.last, 'Я на погрузке')))
       await act(pressIn(4, payloadOf(out.last, 'Всё верно')))
       expect(out.last?.text).toMatch(/Подтвердите номер телефона/)
@@ -423,9 +445,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Не получилось подтвердить номер/)
       await act(ownPhone(4, '79170001122'))
       expect(out.last?.text).toMatch(/груз у водителя, нужна подпись отправителя/)
-      const shipperNote = out.inbox.get(1)!.at(-1)!
-      expect(shipperNote.text).toMatch(/водитель принял груз без замечаний/)
-      expect(buttons(shipperNote)).toContain('Подписать накладную')
+      expect(out.last?.text).toMatch(/✅ Приём груза подтверждён вашей подписью/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Водитель принял груз без замечаний\. Подпишите накладную/)
+      expect(buttons(await openLast(1))).toContain('Подписать накладную')
     })
 
     it('машина уже в другом рейсе — назначить нельзя', async () => {
@@ -476,7 +498,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await openRef(act, out, '1047')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
-      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
       await act(press(3, payloadOf(out.last, 'Назначить машину')))
       await act(press(3, 'nvh'))
       await act(text(3, 'Е777КХ116'))
@@ -514,7 +536,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await openRef(act, out, '1048')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
-      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
       await act(press(3, payloadOf(out.last, 'Назначить машину')))
       await act(press(3, payloadOf(out.last, 'ГАЗон Next')))
       const before = out.inbox.get(3)!.length
@@ -549,9 +571,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       const shipperCard = out.sentLog.filter((s) => s.userId === 1 && /Перевозка ОТГ-2026-1049/.test(s.m.text)).at(-1)!
       expect(out.edits.get('S-first')?.text).toMatch(/актуальная ниже/)
 
-      const offer = out.sentLog.filter((s) => s.userId === 3).at(-1)!
-      expect(offer.m.text).toMatch(/Новая заявка/)
-      await act(pressIn(3, payloadOf(offer.m, 'Принять заявку'), offer.mid))
+      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/предлагает перевезти груз/)
+      await act(pressIn(3, payloadOf(await openLast(3), 'Принять заявку'), 'notice-3'))
       expect(out.edits.get(shipperCard.mid)?.text).toMatch(/Перевозка ОТГ-2026-1049[\s\S]*перевозчик назначает машину и водителя/)
     })
 
@@ -588,8 +609,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
       // Находка 25.09: после «Принять рейс» карточка должна остаться водительской, с «Я на погрузке»,
       // хотя текущей ролью у человека был перевозчик
-      const trip = out.sentLog.filter((s) => s.userId === 500 && /Вам назначен рейс/.test(s.m.text)).at(-1)!
-      await act(pressIn(500, payloadOf(trip.m, 'Принять рейс'), trip.mid))
+      await act(pressIn(500, payloadOf(await openLast(500), 'Принять рейс'), 'notice-500'))
       expect(buttons(out.last)).toContain('Я на погрузке')
 
       // и меню водителя показывает этот рейс, а не «рейсов нет»
@@ -608,7 +628,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await openRef(act, out, '1050')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 600, first_name: 'Пётр' }))
-      await act(press(600, payloadOf(out.inbox.get(600)!.at(-1)!, 'Принять заявку')))
+      await act(press(600, payloadOf(await openLast(600), 'Принять заявку')))
       await act(press(600, payloadOf(out.last, 'Назначить машину')))
       await act(press(600, 'nvh'))
       await act(text(600, 'Т555ТТ116'))
@@ -674,7 +694,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await openRef(act, out, '1056')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
-      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
       await act(press(3, payloadOf(out.last, 'Назначить машину')))
       await act(press(3, 'nvh'))
       await act(text(3, 'Н001НН116'))
@@ -706,13 +726,13 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Подтвердите номер телефона/)
       await act(ownPhone(800, '79170008000'))
       expect(out.last?.text).toMatch(/груз сдан, идёт приёмка/)
-      const turn = out.inbox.get(900)!.at(-1)!
-      expect(turn.text).toMatch(/Сейчас ваш ход/)
+      expect(out.inbox.get(900)!.at(-1)!.text).toMatch(/🔔[\s\S]*Груз у вас\. Проверьте его и отметьте приёмку/)
+      const turn = await openLast(900)
       expect(buttons(turn)).toEqual(['Принято без расхождений', 'Принято частично', 'Отказ от груза', 'Обновить', 'В меню'])
     })
 
     it('получатель: «Принято частично» → номер → расхождения → в карточке и дальше подпись', async () => {
-      const turn = out.inbox.get(900)!.at(-1)!
+      const turn = await openLast(900)
       await act(pressIn(900, payloadOf(turn, 'Принято частично')))
       await act(ownPhone(900, '79270009000'))
       expect(out.last?.text).toMatch(/Расхождения при приёмке/)
@@ -748,7 +768,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await openRef(act, out, '1057')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 3, first_name: 'Олег' }))
-      await act(press(3, payloadOf(out.inbox.get(3)!.at(-1)!, 'Принять заявку')))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
       await act(press(3, payloadOf(out.last, 'Назначить машину')))
       await act(press(3, 'nvh'))
       await act(text(3, 'О777ОО116'))
@@ -862,8 +882,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       }
       await act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig', true))
       vi.unstubAllGlobals()
-      expect(out.last?.text).toMatch(/нужна подпись перевозчика/)
-      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
+      expect(out.last?.text).toMatch(/✅ <b>Подпись «Госключа» проверена<\/b> \(Соколова Марина, УНЭП\)\. ✅ Накладная подписана[\s\S]*нужна подпись перевозчика/)
+      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Отправитель подписал накладную\. Подпишите её со своей стороны/)
     })
 
     it('перевозчик: без номера накладной от оператора Т2 не собрать; оператор выдал — XML Т2 по схеме, демо-подпись', async () => {
@@ -929,7 +949,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.inbox.get(801)!.slice(before).some((m) => m.file)).toBe(false)
       await drain()
       const toDriver = out.inbox.get(801)!.slice(before)
-      expect(toDriver.some((m) => /Сейчас ваш ход/.test(m.text) && buttons(m).includes('Я на выгрузке'))).toBe(true)
+      expect(toDriver.some((m) => /Накладная зарегистрирована, можно ехать/.test(m.text) && buttons(m).includes('Открыть'))).toBe(true)
       const qr = toDriver.find((m) => m.file)!
       expect(qr.file!.name).toBe('QR-ОТГ-2026-1057.gif')
       const gif = Buffer.from(qr.file!.bytes)
@@ -948,8 +968,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(801, 'trip'))
       await act(press(801, payloadOf(out.last, 'Я на выгрузке')))
       await act(pressIn(801, payloadOf(out.last, 'Груз сдан')))
-      const turn = out.inbox.get(902)!.at(-1)!
-      expect(turn.text).toMatch(/Сейчас ваш ход/)
+      expect(out.inbox.get(902)!.at(-1)!.text).toMatch(/Груз у вас/)
+      const turn = await openLast(902)
 
       await act(pressIn(902, payloadOf(turn, 'Принято частично')))
       await act(ownPhone(902, '79270009020'))
@@ -970,7 +990,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       const check = await demoCa.verify({ document: t2bytes, sig: new Uint8Array(t2sig.cms!), expectedInn: carrierInn })
       expect(check.checks.filter((c) => !c.ok)).toEqual([])
       await act(press(902, `sgd:T3:${id}`))
-      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Сейчас ваш ход/)
+      expect(out.last?.text).toMatch(/✅ <b>Демо-подпись принята<\/b> \(модель\)\. ✅ Накладная подписана/)
+      expect(out.inbox.get(3)!.at(-1)!.text).toMatch(/Подпишите накладную — это закроет перевозку/)
 
       await act(press(3, `sg:T4:${id}`))
       const t4 = out.sentLog.filter((s) => s.userId === 3 && s.m.file).at(-1)!.m.file!
@@ -995,6 +1016,27 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(kinds).toEqual(['T1', 'T2', 'T2', 'T2', 'T3', 'T4'])
       const errors = (await conn.db.select().from(event).where(eq(event.shipmentId, id))).filter((e) => e.type === 'operator.error')
       expect(errors).toEqual([])
+    })
+  })
+
+  describe('из карточки в меню', () => {
+    it('«В меню» в карточке удаляет карточку и присылает меню новым сообщением', async () => {
+      await act(press(3, 'tl:carrier'))
+      await act(pressIn(3, payloadOf(out.last, 'ОТГ-2026-1040'), 'card-to-menu'))
+      expect(out.last?.text).toMatch(/Перевозка ОТГ-2026-1040/)
+      const sentBefore = out.inbox.get(3)!.length
+      await act(pressIn(3, payloadOf(out.last, 'В меню'), 'card-to-menu'))
+      expect(out.deleted).toContain('card-to-menu')
+      expect(out.inbox.get(3)!.length).toBe(sentBefore + 1)
+      expect(out.last?.text).toMatch(/Перевозчик · ООО «ГрузЛайн-Казань»/)
+    })
+
+    it('«В меню» не из карточки (из списка) — ничего не удаляет, меню на месте', async () => {
+      await act(press(3, 'tl:carrier'))
+      const deleted = out.deleted.length
+      await act(pressIn(3, payloadOf(out.last, 'В меню'), 'list-msg'))
+      expect(out.deleted.length).toBe(deleted)
+      expect(out.last?.text).toMatch(/Перевозчик · ООО «ГрузЛайн-Казань»/)
     })
   })
 })

@@ -2,6 +2,7 @@ import type { Button, CommandType, OutMessage, Role, ShipmentView, State, Waitin
 import { esc } from '../max/messenger.ts'
 import type { ShipperListItem } from '../core/shipments.ts'
 import { P, S, cb } from './screens.ts'
+import { instruction } from './guidance.ts'
 
 // Карточка перевозки и списки. Тексты — для людей: без «титул», «УИД», «эмулятор».
 
@@ -117,7 +118,8 @@ export function shipmentCard(v: ShipmentView, note?: string): OutMessage {
   lines.push('', `Груз: ${v.cargo.places} мест, ${v.cargo.grossKg} кг`)
   for (const l of v.cargo.lines.slice(0, 3)) lines.push(`• ${esc(l.name)} — ${l.qty} шт.`)
   if (v.cargo.lines.length > 3) lines.push(`• и ещё ${v.cargo.lines.length - 3}`)
-  if (v.turn === v.viewerRole && v.actions.length) lines.push('', '<b>Сейчас ваш ход.</b>')
+  const todo = v.turn === v.viewerRole && v.actions.length ? instruction(v) : null
+  if (todo) lines.push('', `<b>Что сделать:</b> ${todo}`)
 
   const buttons: Button[][] = v.actions.flatMap((a) => actionRows(a, v.id))
   buttons.push([cb('Обновить', S.view(v.id)), cb('В меню', P.open(v.viewerRole))])

@@ -11,6 +11,7 @@ import { S, cb } from './screens.ts'
 import { invitePreview, shipmentCard, shipmentList, shipperList, waitingList } from './cards.ts'
 import { ROLE_TITLE } from './screens.ts'
 import { MOVED_CARD, renderHash, type CardStore } from './card-store.ts'
+import { DONE, eventFor, instruction } from './guidance.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 
 // Действия с перевозками в чате: HAKATON-24 (ядро), HAKATON-29 (шаги), HAKATON-44 (назначение по контакту).
@@ -504,12 +505,13 @@ export class ShipmentFlows {
 
   // ---------- выполнение ----------
 
-  async run(p: PersonRow, cmd: Command, to: Reply) {
+  /** Выполнить команду и показать нажавшему, что получилось; note — своё «что получилось» вместо общего. */
+  async run(p: PersonRow, cmd: Command, to: Reply, note?: string) {
     const res = await this.shipments.execute(cmd, { kind: 'person', personId: p.id, role: byOf(cmd.type) })
     if (!res.ok) return this.failed(res, to)
     // Карточку показываем в роли, которая нажала, а если ход остался за этим же человеком в другой роли — в ней
     const next = res.turn && (await this.shipments.rolesIn(cmd.shipmentId, p.id)).includes(res.turn) ? res.turn : byOf(cmd.type)
-    await this.showCard(p, cmd.shipmentId, to, undefined, next)
+    await this.showCard(p, cmd.shipmentId, to, note ?? DONE[cmd.type], next)
     await this.afterTransition(res, { personId: p.id, role: byOf(cmd.type) })
   }
 
@@ -557,10 +559,9 @@ export class ShipmentFlows {
    */
   async afterTransition(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
     if (res.to === 'closed') return this.notifyClosed(res.shipmentId, actor.personId)
-    await this.notifyTurn(res, actor, reason)
-    const target = res.turn ? await this.shipments.participantOf(res.shipmentId, res.turn) : null
-    // Нажавшему карточку уже перерисовал ответ, тому, чей ход, пришла новая — остальным правим на месте
-    await this.refreshCards(res.shipmentId, new Set([actor.personId, ...(target && !(target.personId === actor.personId && res.turn === actor.role) ? [target.personId] : [])]))
+    await this.notifyParticipants(res, actor, reason)
+    // Нажавшему карточку уже перерисовал ответ — остальным живые карточки правим на месте
+    await this.refreshCards(res.shipmentId, new Set([actor.personId]))
   }
 
   /**
@@ -583,46 +584,40 @@ export class ShipmentFlows {
     }
   }
 
-  private async notifyTurn(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
-    const send = (userId: number, msg: OutMessage) =>
-      this.messenger.send(userId, msg).catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
-
-    // Отправителю — короткое «принято»: ход остаётся у перевозчика, а живых карточек пока нет
-    if (res.to === 'carrier_accepted' && res.from === 'offered') {
-      const shipper = await this.shipments.participantOf(res.shipmentId, 'shipper')
-      const view = await this.shipments.view(res.shipmentId, 'shipper')
-      if (shipper && view)
-        await send(shipper.maxUserId, { text: `✅ Перевозчик ${esc(view.carrier?.name ?? '')} принял заявку ${esc(view.erpRef)}.`, buttons: [[cb('Открыть', S.view(res.shipmentId))]] })
+  /**
+   * Сообщить участникам о переходе (решение 26.09): тому, чей ход, — инструкция, что от него ждут;
+   * остальным, кого шаг касается, — что произошло. В обоих — кнопка «Открыть» с переходом на карточку:
+   * не полагаемся на то, что человек заметит смену статуса в живой карточке.
+   */
+  private async notifyParticipants(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
+    const base = await this.shipments.view(res.shipmentId, 'shipper')
+    if (!base) return
+    const people = new Map<string, { maxUserId: number; roles: Role[] }>()
+    for (const x of await this.shipments.participants(res.shipmentId)) {
+      const e = people.get(x.personId) ?? { maxUserId: x.maxUserId, roles: [] }
+      e.roles.push(x.role)
+      people.set(x.personId, e)
     }
-
-    if (!res.turn) return
-    const target = await this.shipments.participantOf(res.shipmentId, res.turn)
-    if (!target || (target.personId === actor.personId && res.turn === actor.role)) return
-    const view = await this.shipments.view(res.shipmentId, res.turn)
-    if (!view) return
-    const note =
-      res.to === 'offered'
-        ? `📦 <b>Новая заявка</b> от ${esc(view.shipper.name)}`
-        : res.to === 'draft' && reason
-          ? `⚠️ Перевозчик отклонил заявку: ${esc(reason)}`
-          : res.to === 'carrier_accepted' && reason
-            ? `⚠️ Водитель отказался от рейса: ${esc(reason)}. Назначьте другого.`
-            : res.to === 'assigned'
-              ? `🚚 <b>Вам назначен рейс</b> от ${esc(view.carrier?.name ?? 'перевозчика')}`
-              : res.to === 'loaded'
-                ? `🔔 <b>Сейчас ваш ход:</b> водитель принял груз${view.loadingRemarks ? ` с замечаниями: ${esc(view.loadingRemarks)}` : ' без замечаний'}. Подпишите накладную.`
-                : res.to === 't1_signed' && reason
-                  ? `⚠️ ${esc(reason)}. Подпишите накладную ещё раз — оператор примет её заново.`
-                  : '🔔 <b>Сейчас ваш ход</b>'
-    const msg = shipmentCard(view, note)
-    const sent = await this.messenger
-      .send(target.maxUserId, msg, {
-        shipmentId: res.shipmentId,
-        card: { personId: target.personId, hash: renderHash(msg) },
-        escalate: await this.escalation(res.shipmentId, res.turn, view.erpRef),
-      })
-      .catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
-    // Прямая отправка вернула mid — запоминаем карточку сами; очередь делает это после доставки
-    if (sent && 'mid' in sent) await this.rememberCard(res.shipmentId, target.personId, sent.mid, renderHash(msg))
+    const ev = eventFor(base, res.from)
+    const open = [[cb('Открыть', S.view(res.shipmentId))]]
+    for (const [personId, who] of people) {
+      const theirTurn = res.turn !== null && who.roles.includes(res.turn) && !(personId === actor.personId && res.turn === actor.role)
+      if (theirTurn) {
+        const view = await this.shipments.view(res.shipmentId, res.turn!)
+        const todo = view && instruction(view, reason)
+        if (!todo) continue
+        await this.messenger
+          .send(who.maxUserId, { text: `🔔 <b>Перевозка ${esc(base.erpRef)}</b>\n${todo}`, buttons: open }, {
+            shipmentId: res.shipmentId,
+            escalate: await this.escalation(res.shipmentId, res.turn!, base.erpRef),
+          })
+          .catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
+      } else if (personId !== actor.personId && ev && who.roles.some((r) => ev.roles.includes(r))) {
+        await this.messenger
+          .send(who.maxUserId, { text: `ℹ️ <b>Перевозка ${esc(base.erpRef)}</b>\n${ev.text}`, buttons: open }, { shipmentId: res.shipmentId })
+          .catch((err) => this.log.warn({ err, shipmentId: res.shipmentId }, 'не удалось написать участнику'))
+      }
+    }
   }
+
 }

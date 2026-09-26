@@ -74,7 +74,7 @@ export class Bot {
     invites: InviteService,
     fleet: FleetService,
     outbox: Outbox,
-    cards: CardStore,
+    private readonly cards: CardStore,
     signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null },
     botToken: string,
     botUsername: string,
@@ -239,6 +239,12 @@ export class Bot {
     const role = ROLES.find((r) => r === arg)
     if (kind === 'open' && role) {
       await this.store.clearDialog(p.id)
+      // Из карточки в меню: карточку удаляем, меню — новым сообщением (решение 26.09)
+      if (to.kind === 'callback' && to.mid && (await this.cards.forget(p.id, to.mid))) {
+        await this.messenger.delete(to.mid).catch((err) => this.log.warn({ err }, 'не удалось удалить карточку'))
+        await this.messenger.answerCallback(to.callbackId, null).catch(() => {})
+        return this.showRole(p, role, { kind: 'message', userId: to.userId })
+      }
       return this.showRole(p, role, to)
     }
     if (kind === 'add' && role) return this.startForm(p, role, to)

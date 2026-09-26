@@ -45,6 +45,10 @@ export class MaxMessenger implements Messenger {
     await this.api.editMessage(mid, toBody(message))
   }
 
+  async delete(mid: string) {
+    await this.api.deleteMessage(mid)
+  }
+
   async answerCallback(callbackId: string, notification: string | null, message?: OutMessage) {
     await this.api.answerCallback(callbackId, {
       ...(notification ? { notification } : {}),

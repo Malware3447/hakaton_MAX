@@ -144,6 +144,8 @@ export interface Messenger {
   send(maxUserId: number, message: OutMessage): Promise<{ mid: string }>
   /** перерисовать сообщение на месте (живая карточка, меню) */
   edit(mid: string, message: OutMessage): Promise<void>
+  /** удалить сообщение (карточку, из которой человек ушёл в меню) */
+  delete(mid: string): Promise<void>
   /** ответ на нажатие: всплывающее уведомление и/или правка сообщения */
   answerCallback(callbackId: string, notification: string | null, message?: OutMessage): Promise<void>
 }
