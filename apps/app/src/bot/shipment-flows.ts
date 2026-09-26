@@ -556,10 +556,31 @@ export class ShipmentFlows {
    * ход остался у той же роли, что нажала кнопку.
    */
   async afterTransition(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
+    if (res.to === 'closed') return this.notifyClosed(res.shipmentId, actor.personId)
     await this.notifyTurn(res, actor, reason)
     const target = res.turn ? await this.shipments.participantOf(res.shipmentId, res.turn) : null
     // Нажавшему карточку уже перерисовал ответ, тому, чей ход, пришла новая — остальным правим на месте
     await this.refreshCards(res.shipmentId, new Set([actor.personId, ...(target && !(target.personId === actor.personId && res.turn === actor.role) ? [target.personId] : [])]))
+  }
+
+  /**
+   * Закрыта: ход больше ни у кого, поэтому «ваш ход» не уходит — каждому участнику, кроме закрывшего,
+   * отдельное сообщение с итоговой карточкой; оно становится его живой карточкой.
+   */
+  private async notifyClosed(shipmentId: string, actorPersonId: string) {
+    const all = await this.shipments.participants(shipmentId)
+    const seen = new Set<string>([actorPersonId])
+    for (const x of all) {
+      if (seen.has(x.personId)) continue
+      seen.add(x.personId)
+      const view = await this.shipments.view(shipmentId, x.role)
+      if (!view) continue
+      const msg = shipmentCard(view, '✅ <b>Накладная закрыта</b>: груз сдан, все четыре подписи на месте, статус ушёл в учётную систему.')
+      const sent = await this.messenger
+        .send(x.maxUserId, msg, { shipmentId, card: { personId: x.personId, hash: renderHash(msg) } })
+        .catch((err) => this.log.warn({ err, shipmentId }, 'не удалось сообщить о закрытии'))
+      if (sent && 'mid' in sent) await this.rememberCard(shipmentId, x.personId, sent.mid, renderHash(msg))
+    }
   }
 
   private async notifyTurn(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {

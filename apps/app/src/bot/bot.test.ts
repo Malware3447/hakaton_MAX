@@ -977,8 +977,14 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(t4.name).toMatch(/^ON_TRNACLPVYN_/)
       expect((await validateTitle('T4', t4.bytes)).errors).toEqual([])
       expect(decode1251(t4.bytes)).toContain(`ИдФайлИнфГП="${t3.name.replace(/\.xml$/, '')}"`)
+      const before = new Map([801, 902, 1].map((u) => [u, out.inbox.get(u)!.length]))
       await act(press(3, `sgd:T4:${id}`))
       expect(out.last?.text).toMatch(/Статус: закрыта/)
+      // Находка 26.09: о закрытии сообщаем всем, кроме закрывшего — ход больше ни у кого
+      for (const u of [801, 902, 1]) {
+        const got = out.inbox.get(u)!.slice(before.get(u))
+        expect(got.some((m) => /Накладная закрыта[\s\S]*Статус: закрыта/.test(m.text)), `участник ${u}`).toBe(true)
+      }
       const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
       expect(s!.state).toBe('closed')
 

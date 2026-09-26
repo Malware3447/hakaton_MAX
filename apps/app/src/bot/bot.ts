@@ -51,11 +51,14 @@ const nav = [cb('Назад', P.back), cb('В меню', P.toMenu)]
 
 const fullName = (u: MaxUser) => [u.first_name, u.last_name].filter(Boolean).join(' ')
 
-function parseRuDate(s: string): Date | null {
+/** ДД.ММ.ГГГГ строго: 11.20.2027 или 31.02.2027 — не дата, а не «перенос» на другой месяц. */
+export function parseRuDate(s: string): Date | null {
   const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s.trim())
   if (!m) return null
-  const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 21)) // конец дня по Москве
-  return d.getUTCDate() === Number(m[1]) ? d : null
+  const [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  if (month < 1 || month > 12 || day < 1 || year < 2000 || year > 2100) return null
+  const d = new Date(Date.UTC(year, month - 1, day, 20, 59, 59)) // конец дня по Москве
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day ? d : null
 }
 
 export class Bot {
@@ -399,7 +402,7 @@ export class Bot {
         return this.goto(p, { ...ctx, poaNumber: text }, 'poa_date', to, step)
       case 'poa_date': {
         const date = parseRuDate(text)
-        if (!date) return this.goto(p, ctx, step, to, null, 'Дата в виде ДД.ММ.ГГГГ.')
+        if (!date) return this.goto(p, ctx, step, to, null, 'Такой даты нет — проверьте день и месяц. Формат ДД.ММ.ГГГГ, например 31.10.2026.')
         if (date.getTime() < Date.now()) return this.goto(p, ctx, step, to, null, 'Доверенность уже истекла — укажите действующую.')
         return this.afterPoa(p, { ...ctx, poaValidTo: date.toISOString() }, step, to)
       }
