@@ -270,6 +270,17 @@ export const inbox = pgTable('inbox', {
   error: text('error'),
 })
 
+/**
+ * Кэш ответов справочника организаций (DaData): ИНН → реквизиты или «не нашли».
+ * Бережёт дневной лимит DaData при загрузке таблиц; сбои сети сюда не пишем.
+ */
+export const orgLookupCache = pgTable('org_lookup_cache', {
+  inn: text('inn').primaryKey(),
+  /** null — DaData ответила, что такого ИНН нет */
+  found: jsonb('found').$type<Record<string, unknown> | null>(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 // ---------- Модели внешних систем (помечаются «модель» в интерфейсе и README) ----------
 
 export const mock = pgSchema('mock')

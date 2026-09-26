@@ -2,7 +2,7 @@ import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, typ
 import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
-import { P, ROLE_TITLE, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
+import { P, ROLE_TITLE, S, cb, companyScreen, helpScreen, roleMenu, rootMenu } from './screens.ts'
 import { STATE_TEXT } from './cards.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
 import type { ExecResult, ShipmentService } from '../core/shipments.ts'
@@ -15,6 +15,8 @@ import type { SignatureService, SignatureVerifier } from '../core/signatures.ts'
 import type { Outbox } from './outbox.ts'
 import type { CardStore } from './card-store.ts'
 import type { FleetService } from '../core/fleet.ts'
+import type { MockErp } from '../adapters/mock-erp.ts'
+import { ImportFlows } from './import-flows.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
 // Спецификация — docs/roli-i-menyu.md.
@@ -65,6 +67,7 @@ export class Bot {
   private readonly flows: ShipmentFlows
   private readonly trips: TripFlows
   private readonly sign: SignFlows
+  private readonly imports: ImportFlows | null
 
   constructor(
     private readonly store: BotStore,
@@ -79,6 +82,8 @@ export class Bot {
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
+    /** модель учётной системы: загрузка отгрузок из Excel; без неё кнопка отвечает «недоступно» */
+    erp: MockErp | null = null,
   ) {
     this.flows = new ShipmentFlows(
       store,
@@ -101,6 +106,7 @@ export class Bot {
     }
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
     this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
+    this.imports = erp ? new ImportFlows(store, erp, directory, messenger, ui, log) : null
     // После «Поделиться номером» подпись продолжается сама
     this.trips.onPhone('sign', (p, pending, to) => this.sign.start(p, pending.title as 'T1' | 'T2', String(pending.shipmentId), to))
   }
@@ -140,8 +146,12 @@ export class Bot {
       const files = fileAttachments(m)
       if (files.length) {
         const d = await this.store.getDialog(p.id)
+        if (d && this.imports && (await this.imports.onFiles(p, d, files, reply))) return
         if (d && (await this.sign.onFiles(p, d, files, reply))) return
-        return this.reply(reply, { text: 'Файл получил, но сейчас его некуда приложить. Если это подпись — сначала нажмите «Подписать накладную» в карточке.', buttons: [[cb('Меню ролей', P.root)]] })
+        return this.reply(reply, {
+          text: 'Файл получил, но сейчас его некуда приложить. Если это подпись — сначала нажмите «Подписать накладную» в карточке; если таблица отгрузок — «Загрузить из Excel» в списке отгрузок.',
+          buttons: [[cb('Меню ролей', P.root)]],
+        })
       }
       const contact = m.body.attachments?.find((a) => a.type === 'contact')
       if (contact) {
@@ -218,11 +228,13 @@ export class Bot {
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
     // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
-    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:'].some((x) => payload.startsWith(x))
+    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:', 'xc'].some((x) => payload.startsWith(x))
     if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
     if (await this.trips.onButton(p, payload, to)) return
     if (await this.sign.onButton(p, payload, to)) return
+    if (this.imports && (await this.imports.onButton(p, payload, to))) return
+    if (payload === S.importStart) return this.notify(to, 'Загрузка из Excel сейчас недоступна')
     if (payload === P.root) return this.showRoot(p, to)
     if (payload === P.help) return this.reply(to, helpScreen)
     if (payload === P.company) {

@@ -42,6 +42,8 @@ export const S = {
   waiting: (role: Role) => `wl:${role}`,
   offers: 'ol',
   trips: (role: Role) => `tl:${role}`,
+  importStart: 'xi',
+  importConfirm: 'xc',
 }
 
 export const cb = (text: string, payload: string): Button => ({ text, kind: 'callback', payload })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OrgDirectory } from '@nk/domain'
-import { ChainDirectory, DadataDirectory, russianQuotes } from './dadata-directory.ts'
+import { CACHE_TTL_MS, ChainDirectory, DadataDirectory, russianQuotes, type OrgLookupCache } from './dadata-directory.ts'
 
 const silent = { warn: () => {} }
 
@@ -62,6 +62,66 @@ describe('DaData: компания по ИНН', () => {
 
   it('кавычки: только парные меняем на «ёлочки»', () => {
     expect(russianQuotes('ПАО "СБЕРБАНК РОССИИ"')).toBe('ПАО «СБЕРБАНК РОССИИ»')
+  })
+})
+
+describe('DaData: кэш ответов', () => {
+  const memCache = () => {
+    const m = new Map<string, { found: Awaited<ReturnType<OrgDirectory['findByInn']>>; fetchedAt: Date }>()
+    const cache: OrgLookupCache = {
+      async get(inn) {
+        return m.get(inn) ?? null
+      },
+      async put(inn, found) {
+        m.set(inn, { found, fetchedAt: new Date(clock.t) })
+      },
+    }
+    return { m, cache }
+  }
+  const clock = { t: Date.parse('2026-09-26T10:00:00Z') }
+  const counting = (status: number, body: unknown) => {
+    const c = { n: 0 }
+    const f = (async () => {
+      c.n++
+      return new Response(JSON.stringify(body), { status })
+    }) as unknown as typeof fetch
+    return { c, f }
+  }
+
+  it('повторный ИНН берём из кэша, а через неделю спрашиваем DaData снова', async () => {
+    const { cache } = memCache()
+    const { c, f } = counting(200, party())
+    const d = new DadataDirectory('KEY', silent, f, cache, () => new Date(clock.t))
+    expect((await d.findByInn('7719402047'))?.name).toBe('ООО «МОТОРИКА»')
+    expect((await d.findByInn('7719402047'))?.name).toBe('ООО «МОТОРИКА»')
+    expect(c.n).toBe(1)
+    clock.t += CACHE_TTL_MS.found + 1
+    await d.findByInn('7719402047')
+    expect(c.n).toBe(2)
+  })
+
+  it('«не нашли» помним сутки, сбой DaData не кэшируем', async () => {
+    const { m, cache } = memCache()
+    const miss = counting(200, { suggestions: [] })
+    const d = new DadataDirectory('KEY', silent, miss.f, cache, () => new Date(clock.t))
+    expect(await d.findByInn('7719402047')).toBeNull()
+    expect(await d.findByInn('7719402047')).toBeNull()
+    expect(miss.c.n).toBe(1)
+    expect(m.get('7719402047')?.found).toBeNull()
+
+    const down = counting(503, {})
+    const d2 = new DadataDirectory('KEY', silent, down.f, cache, () => new Date(clock.t))
+    await d2.findByInn('1655000000')
+    expect(m.has('1655000000')).toBe(false)
+  })
+
+  it('DaData упала — отдаём устаревший ответ из кэша', async () => {
+    const { m, cache } = memCache()
+    m.set('7719402047', { found: { inn: '7719402047', kpp: null, name: 'ООО «МОТОРИКА»', address: 'Москва', source: 'dadata' }, fetchedAt: new Date(clock.t - 30 * CACHE_TTL_MS.missing) })
+    const down = counting(503, {})
+    const d = new DadataDirectory('KEY', silent, down.f, cache, () => new Date(clock.t))
+    expect((await d.findByInn('7719402047'))?.name).toBe('ООО «МОТОРИКА»')
+    expect(down.c.n).toBe(1)
   })
 })
 

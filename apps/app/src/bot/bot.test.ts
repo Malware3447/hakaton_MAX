@@ -10,6 +10,8 @@ import { MockDirectory } from '../adapters/mock-directory.ts'
 import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
+import { buildWorkbook } from '../core/erp-import.ts'
+import { sampleRows, sampleRowsWithErrors } from '../db/erp-sample.ts'
 import { event, mockEpdTitle, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
 import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
@@ -108,7 +110,7 @@ const started = (id: number, payload: string): MaxUpdate => ({ update_type: 'bot
 const tokenIn = (m: OutMessage | null) => /start=inv_([\w-]+)/.exec(m?.text ?? '')?.[1] ?? ''
 /** Открыть отгрузку по номеру, пролистав список отправителя. */
 async function openRef(act: (u: MaxUpdate) => Promise<void>, out: { last: OutMessage | null }, ref: string) {
-  for (let page = 0; page < 5; page++) {
+  for (let page = 0; page < 10; page++) {
     await act(press(1, `sl:${page}`))
     const b = (out.last?.buttons ?? []).flat().find((x) => x.text.startsWith(ref))
     if (b) return act(press(1, b.payload))
@@ -184,7 +186,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     caDir = await mkdtemp(join(tmpdir(), 'nk-bot-demo-ca-'))
     demoCa = new DemoCa(caDir)
     const demo = new DemoCaSigner(conn.db, demoCa, svc, titles, signatures)
-    bot = new Bot(new BotStore(conn.db), out, directory, svc, new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles, signatures, verifier, demo }, 'test-token', 'test_bot', pino({ level: 'silent' }))
+    bot = new Bot(new BotStore(conn.db), out, directory, svc, new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles, signatures, verifier, demo }, 'test-token', 'test_bot', pino({ level: 'silent' }), new MockErp(conn.db))
   })
   afterAll(async () => {
     await conn.pool.end()
@@ -1055,6 +1057,59 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(pressIn(3, payloadOf(out.last, 'В меню'), 'list-msg'))
       expect(out.deleted.length).toBe(deleted)
       expect(out.last?.text).toMatch(/Перевозчик · ООО «ГрузЛайн-Казань»/)
+    })
+  })
+
+  describe('новые отгрузки из Excel (HAKATON-46)', () => {
+    const serve = (bytes: Uint8Array) => vi.stubGlobal('fetch', async () => new Response(bytes))
+
+    it('«Загрузить из Excel» в списке → шаблон файлом', async () => {
+      await act(press(1, 'sl:0'))
+      await act(press(1, payloadOf(out.last, 'Загрузить из Excel')))
+      // инструкция — на месте списка, шаблон — следом отдельным сообщением с файлом
+      const tpl = out.last!.file!
+      expect(tpl.name).toBe('otgruzki-shablon.xlsx')
+      expect(tpl.bytes.byteLength).toBeGreaterThan(1000)
+    })
+
+    it('таблица с ошибками: бот перечисляет их по строкам и ничего не грузит', async () => {
+      serve(await buildWorkbook(sampleRowsWithErrors(await readSeed())))
+      await act(fileMsg(1, 'otgruzki.xlsx', 'https://files.test/bad'))
+      expect(out.last?.text).toMatch(/В таблице 5 ошибок/)
+      expect(out.last?.text).toMatch(/строка 2, ОТГ-2026-2040: ИНН получателя «1167049239» с ошибкой/)
+      expect(buttons(out.last)).toEqual(['Отмена'])
+    })
+
+    it('не таблица — просим .xlsx', async () => {
+      await act(fileMsg(1, 'otgruzki.pdf', 'https://files.test/pdf'))
+      expect(out.last?.text).toMatch(/не таблица Excel/)
+    })
+
+    it('исправленная таблица: сводка → «Загрузить 17» → отгрузки в списке', async () => {
+      serve(await buildWorkbook(sampleRows(await readSeed())))
+      await act(fileMsg(1, 'otgruzki.xlsx', 'https://files.test/ok'))
+      expect(out.last?.text).toMatch(/Понял 17 отгрузок/)
+      expect(out.last?.text).toMatch(/ОТГ-2026-2040<\/b> · ООО «Волга» · 30\.09, 11:00 · 3 поз\., 86 мест/)
+      await act(press(1, payloadOf(out.last, 'Загрузить 17')))
+      expect(out.last?.text).toMatch(/Отгрузки загружены[\s\S]*новых — 17/)
+      await act(press(1, 'sl:0'))
+      expect(out.last?.text).toMatch(/Всего 34/)
+      await openRef(act, out, '2040')
+      expect(out.last?.text).toMatch(/Перевозка ОТГ-2026-2040/)
+      vi.unstubAllGlobals()
+    })
+
+    it('ту же таблицу ещё раз: открытую в боте отгрузку заменить нельзя', async () => {
+      serve(await buildWorkbook(sampleRows(await readSeed())))
+      await act(press(1, 'xi'))
+      await act(fileMsg(1, 'otgruzki.xlsx', 'https://files.test/ok'))
+      expect(out.last?.text).toMatch(/ОТГ-2026-2040: эта отгрузка уже открыта в боте/)
+      vi.unstubAllGlobals()
+    })
+
+    it('«Загрузить» без свежей проверки — просим файл заново', async () => {
+      await act(press(1, 'xc'))
+      expect(out.last?.text).toMatch(/Проверка устарела/)
     })
   })
 })

@@ -142,6 +142,7 @@ export function shipperList(items: ShipperListItem[], page: number): OutMessage 
   if (p > 0) navRow.push(cb('← Назад', S.list(p - 1)))
   if (p < pages - 1) navRow.push(cb('Дальше →', S.list(p + 1)))
   if (navRow.length) buttons.push(navRow)
+  buttons.push([cb('Загрузить из Excel', S.importStart)])
   buttons.push([cb('В меню', P.open('shipper'))])
   return {
     text: [`<b>Отгрузки из учётной системы</b> (модель)`, `Всего ${items.length}, страница ${p + 1} из ${pages}. Номер · получатель · дата погрузки · статус.`].join('\n'),
