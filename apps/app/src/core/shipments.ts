@@ -36,7 +36,7 @@ export type ExecResult =
       /** выданные приглашения: токен показываем один раз, в базе только хеш */
       invites: { role: Role; token: string }[]
     }
-  | { ok: false; code: DecisionErrorCode | 'not_found' | 'not_participant' | 'busy'; message: string }
+  | { ok: false; code: DecisionErrorCode | 'not_found' | 'not_participant'; message: string }
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -142,20 +142,7 @@ export class ShipmentService {
   // ---------- команды ----------
 
   async execute(cmd: Command, actor: Actor): Promise<ExecResult> {
-    let res: ExecResult
-    try {
-      res = await this.executeTx(cmd, actor)
-    } catch (err) {
-      // Частичные уникальные индексы: одна активная перевозка на машину и на водителя
-      const pg = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } }
-      const code = pg.code ?? pg.cause?.code
-      const constraint = pg.constraint ?? pg.cause?.constraint ?? ''
-      if (code === '23505' && constraint.startsWith('shipment_active_')) {
-        const what = constraint.includes('vehicle') ? 'Эта машина' : 'Этот водитель'
-        return { ok: false, code: 'busy', message: `${what} уже в другой перевозке, которая ещё не закрыта` }
-      }
-      throw err
-    }
+    const res = await this.executeTx(cmd, actor)
     // После коммита: последствия с внешними системами — в очередь.
     // Если процесс упадёт между коммитом и постановкой, последствие потеряется; для MVP допустимо.
     if (res.ok && res.afterCommit.length && this.sink) await this.sink.enqueue(res.shipmentId, res.afterCommit)

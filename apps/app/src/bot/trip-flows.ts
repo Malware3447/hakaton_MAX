@@ -272,15 +272,8 @@ export class TripFlows {
   private async selfDriver(p: PersonRow, ctx: Ctx, to: Reply) {
     const org = await this.carrierOrg(p)
     if (!org) return this.ui.notify(to, 'Сначала подключите компанию-перевозчика')
-    const role = (await this.store.roles(p.id)).find((r) => r.role === 'driver')
-    if (role?.org && role.org.id !== org.id) {
-      return this.ui.reply(to, {
-        text: `Вы уже водитель другого перевозчика: ${esc(role.org.name)}. Одна роль — одна компания, поэтому назначить вас нельзя.`,
-        buttons: [[cb('Отмена', S.view(String(ctx.shipmentId)))]],
-      })
-    }
-    if (!role) await this.store.addRoleForOrg(p.id, 'driver', org.id, false)
-    else if (!role.org) await this.store.setRoleOrg(p.id, 'driver', org.id)
+    // Водитель может работать на нескольких перевозчиков: этот добавляется к его компаниям (решение 26.09)
+    await this.store.ensureDriverOrg(p.id, org.id)
     return this.assign(p, ctx, { personId: p.id }, to)
   }
 
@@ -295,12 +288,9 @@ export class TripFlows {
     const found = await this.store.personByMaxUserId(info.user_id)
     if (found) {
       const role = (await this.store.roles(found.id)).find((r) => r.role === 'driver')
-      if (role?.org && org && role.org.id !== org.id) {
-        await this.ui.reply(to, { text: `${esc(name)} работает водителем у другого перевозчика: ${esc(role.org.name)}. Назначить его нельзя.` })
-        return
-      }
-      if (role) {
-        if (!role.org && org) await this.store.setRoleOrg(found.id, 'driver', org.id)
+      if (role && org) {
+        // Водитель другого перевозчика — не отказ: водитель может работать на нескольких (решение 26.09)
+        await this.store.ensureDriverOrg(found.id, org.id)
         return this.assign(p, d.context, { personId: found.id }, to)
       }
     }
@@ -323,7 +313,6 @@ export class TripFlows {
       { kind: 'person', personId: p.id, role: 'carrier' },
     )
     if (!res.ok) {
-      if (res.code === 'busy') return this.ui.reply(to, { text: `⚠️ ${res.message}. Выберите другую.`, buttons: [[cb('Выбрать заново', `as:${shipmentId}`)]] })
       return this.flows.failed(res, to)
     }
     await this.store.clearDialog(p.id)
@@ -449,9 +438,12 @@ export class TripFlows {
     await this.ui.reply(to, { text: lines.join('\n'), buttons: [[cb('В меню', 'open:carrier')]] })
   }
 
+  /** Рейсы в работе: один — сразу карточка, несколько — список (водитель везёт несколько за раз). */
   private async showTrip(p: PersonRow, to: Reply) {
-    const active = (await this.shipments.listFor(p.id, 'driver')).find((s) => s.state !== 'closed' && s.state !== 'cancelled')
-    if (!active) return this.ui.reply(to, { text: 'Активного рейса нет. Когда перевозчик назначит вас, рейс придёт сюда.', buttons: [[cb('В меню', 'open:driver')]] })
-    await this.flows.showCard(p, active.shipmentId, to)
+    const active = await this.flows.activeTrips(p.id)
+    if (!active.length) return this.ui.reply(to, { text: 'Рейсов в работе нет. Когда перевозчик назначит вас, рейс придёт сюда.', buttons: [[cb('В меню', 'open:driver')]] })
+    if (active.length === 1) return this.flows.showCard(p, active[0]!.shipmentId, to)
+    await this.ui.reply(to, shipmentList(`Рейсы в работе: ${active.length}`, active, 'driver', ''))
   }
+
 }

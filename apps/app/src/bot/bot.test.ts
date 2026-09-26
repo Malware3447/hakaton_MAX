@@ -450,13 +450,25 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(buttons(await openLast(1))).toContain('Подписать накладную')
     })
 
-    it('машина уже в другом рейсе — назначить нельзя', async () => {
+    it('одна машина и один водитель везут несколько рейсов за раз (решение 26.09)', async () => {
+      // ОТГ-1045 перевозчик принимает для следующего теста; второй рейс водителю 4 — ОТГ-1042
       await openCarrierTrip('ОТГ-2026-1045')
       await act(press(3, payloadOf(out.last, 'Принять заявку')))
+      await openRef(act, out, '1042')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
       await act(press(3, payloadOf(out.last, 'Назначить машину')))
       await act(press(3, payloadOf(out.last, 'КАМАЗ 65115')))
       await act(press(3, payloadOf(out.last, 'Человек 4')))
-      expect(out.last?.text).toMatch(/Эта машина уже в другой перевозке/)
+      expect(out.last?.text).toMatch(/Машина и водитель назначены[\s\S]*КАМАЗ 65115 А245КМ116, водитель: Человек 4/)
+
+      await act(press(4, 'open:driver'))
+      expect(out.last?.text).toMatch(/Рейсов в работе: 2/)
+      expect(out.last?.text).toMatch(/ОТГ-2026-1040/)
+      expect(out.last?.text).toMatch(/ОТГ-2026-1042 <\/b>|<b>ОТГ-2026-1042<\/b> — ждём, что водитель примет рейс/)
+      await act(press(4, payloadOf(out.last, 'Открыть рейсы')))
+      expect(buttons(out.last)).toEqual(expect.arrayContaining([expect.stringMatching(/ОТГ-2026-1040/), expect.stringMatching(/ОТГ-2026-1042/)]))
     })
 
     it('незнакомому водителю — приглашение; по ссылке он сразу в рейсе, замечания уходят отправителю', async () => {
@@ -614,12 +626,12 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
       // и меню водителя показывает этот рейс, а не «рейсов нет»
       await act(press(500, 'open:driver'))
-      expect(out.last?.text).toMatch(/Текущий рейс: <b>ОТГ-2026-1044<\/b> — водитель едет на погрузку[\s\S]*Сейчас ваш ход/)
+      expect(out.last?.text).toMatch(/Рейс в работе:\n• <b>ОТГ-2026-1044<\/b> — водитель едет на погрузку[\s\S]*Ждут вашего действия: 1/)
       await act(text(500, '/menu'))
       expect(buttons(out.last)).toContain('✓ Водитель · ООО «Челны-Транс»')
     })
 
-    it('водитель другого перевозчика не может назначить себя', async () => {
+    it('водитель другого перевозчика назначает себя — теперь он водитель у обоих', async () => {
       // 600 — водитель ГрузЛайна (вошёл по приглашению); заводит роль перевозчика от ИП Хабибуллина
       await act(press(600, 'add:carrier'))
       await act(text(600, '165595589478'))
@@ -637,8 +649,14 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(text(600, '15'))
       await act(text(600, '30'))
       await act(press(600, 'own:own'))
+      const before = out.inbox.get(600)!.length
       await act(press(600, 'adr:self'))
-      expect(out.last?.text).toMatch(/Вы уже водитель другого перевозчика: ООО «ГрузЛайн-Казань»/)
+      // Решение 26.09: водитель может работать на нескольких перевозчиков — назначаем, а не отказываем.
+      // Он сам себе водитель: кроме ответа ему приходит и «Вам назначен рейс»
+      const mine = out.inbox.get(600)!.slice(before).map((m) => m.text)
+      expect(mine.some((x) => /Вам назначен рейс/.test(x))).toBe(true)
+      await act(text(600, '/menu'))
+      expect(buttons(out.last)).toEqual(expect.arrayContaining([expect.stringMatching(/Водитель · ООО «ГрузЛайн-Казань», ИП Хабибуллин Р\. Ф\./)]))
     })
   })
 

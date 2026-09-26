@@ -58,10 +58,9 @@ export class ShipmentFlows {
     private readonly log: FastifyBaseLogger,
   ) {}
 
-  /** Текущий рейс водителя — для шапки его меню. */
-  async activeTrip(personId: string) {
-    const list = await this.shipments.listFor(personId, 'driver')
-    return list.find((s) => s.state !== 'closed' && s.state !== 'cancelled') ?? null
+  /** Рейсы водителя в работе — он может везти несколько за раз. */
+  async activeTrips(personId: string) {
+    return (await this.shipments.listFor(personId, 'driver')).filter((s) => s.state !== 'closed' && s.state !== 'cancelled')
   }
 
   /** Счётчики для шапки меню роли. */
@@ -305,9 +304,8 @@ export class ShipmentFlows {
         if (!mine) await this.store.addRoleForOrg(p.id, 'consignee', shipment.consigneeOrgId, false)
         return this.acceptInvite(p, invite.id, shipment.consigneeOrgId, to)
       case 'driver':
-        if (mine?.org && shipment.carrierOrgId && mine.org.id !== shipment.carrierOrgId) return conflict()
-        if (!mine && shipment.carrierOrgId) await this.store.addRoleForOrg(p.id, 'driver', shipment.carrierOrgId, false)
-        else if (mine && !mine.org && shipment.carrierOrgId) await this.store.setRoleOrg(p.id, 'driver', shipment.carrierOrgId)
+        // Водитель может работать на нескольких перевозчиков: добавляем ему этого (решение 26.09)
+        if (shipment.carrierOrgId) await this.store.ensureDriverOrg(p.id, shipment.carrierOrgId)
         return this.acceptInvite(p, invite.id, shipment.carrierOrgId, to)
       default:
         return this.ui.reply(to, { text: 'Такие приглашения пока не поддерживаются.', buttons: menu })

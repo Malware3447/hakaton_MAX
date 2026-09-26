@@ -49,7 +49,6 @@ export class InviteService {
 
       const [s] = await tx.select().from(shipment).where(eq(shipment.id, p.shipmentId)).for('update')
       if (!s) return { ok: false, reason: 'not_found' } as const
-      if (p.role === 'driver' && s.carrierOrgId && orgId && orgId !== s.carrierOrgId) return { ok: false, reason: 'org_conflict' } as const
       if (p.role === 'consignee' && orgId !== s.consigneeOrgId) return { ok: false, reason: 'org_conflict' } as const
 
       const [me] = await tx.select({ maxUserId: person.maxUserId }).from(person).where(eq(person.id, personId))

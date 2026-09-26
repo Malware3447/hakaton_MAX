@@ -61,7 +61,10 @@ export const person = pgTable('person', {
   createdAt: createdAt(),
 })
 
-/** Роль человека. Одна организация на роль человека: уникально (person_id, role). */
+/**
+ * Роль человека в организации. Одна организация на роль (бот не даёт завести вторую), кроме водителя:
+ * он работает на нескольких перевозчиков — по строке на перевозчика (решение 26.09).
+ */
 export const membership = pgTable(
   'membership',
   {
@@ -76,7 +79,11 @@ export const membership = pgTable(
     poaValidTo: timestamp('poa_valid_to', { withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('membership_person_role_uq').on(t.personId, t.role), index('membership_org_idx').on(t.orgId)],
+  (t) => [
+    // у водителя без перевозчика org_id пуст — такая строка одна
+    uniqueIndex('membership_person_role_org_uq').on(t.personId, t.role, sql`coalesce(${t.orgId}, '00000000-0000-0000-0000-000000000000'::uuid)`),
+    index('membership_org_idx').on(t.orgId),
+  ],
 )
 
 /** Машины перевозчика: вводятся диспетчером при первом назначении, дальше выбираются кнопкой. */
@@ -100,9 +107,6 @@ export const vehicle = pgTable(
 
 // ---------- Перевозка ----------
 
-const activeStates = sql.raw(
-  `state not in ('draft', 'closed', 'cancelled')`,
-)
 
 export const shipment = pgTable(
   'shipment',
@@ -136,9 +140,10 @@ export const shipment = pgTable(
   },
   (t) => [
     uniqueIndex('shipment_erp_ref_uq').on(t.shipperOrgId, t.erpRef),
-    // одна активная перевозка на машину и на водителя
-    uniqueIndex('shipment_active_vehicle_uq').on(t.vehicleId).where(activeStates),
-    uniqueIndex('shipment_active_driver_uq').on(t.driverPersonId).where(activeStates),
+    // Решение 26.09: водитель везёт несколько рейсов за раз (обычно в одной машине, сборный груз),
+    // поэтому «одна активная перевозка на машину и водителя» больше не ограничиваем
+    index('shipment_driver_idx').on(t.driverPersonId),
+    index('shipment_vehicle_idx').on(t.vehicleId),
     index('shipment_turn_idx').on(t.turn, t.turnSince),
   ],
 )

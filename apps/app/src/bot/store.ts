@@ -10,7 +10,10 @@ export type OrgRow = typeof org.$inferSelect
 
 export interface RoleInfo {
   role: Role
+  /** организация роли; у водителя — первый из его перевозчиков */
   org: OrgRow | null
+  /** все организации роли: у водителя их может быть несколько, у остальных одна */
+  orgs: OrgRow[]
   isAdmin: boolean
   canSign: boolean
   poaNumber: string | null
@@ -48,14 +51,26 @@ export class BotStore {
       .leftJoin(org, eq(org.id, membership.orgId))
       .where(eq(membership.personId, personId))
       .orderBy(membership.createdAt)
-    return rows.map(({ m, o }) => ({
-      role: m.role,
-      org: o,
-      isAdmin: m.isAdmin,
-      canSign: m.canSign,
-      poaNumber: m.poaNumber,
-      poaValidTo: m.poaValidTo,
-    }))
+    // Строки одной роли (у водителя — по перевозчику) сводим в одну роль со списком организаций
+    const byRole = new Map<Role, RoleInfo>()
+    for (const { m, o } of rows) {
+      const seen = byRole.get(m.role)
+      if (seen) {
+        if (o) seen.orgs.push(o)
+        seen.org ??= o
+        continue
+      }
+      byRole.set(m.role, {
+        role: m.role,
+        org: o,
+        orgs: o ? [o] : [],
+        isAdmin: m.isAdmin,
+        canSign: m.canSign,
+        poaNumber: m.poaNumber,
+        poaValidTo: m.poaValidTo,
+      })
+    }
+    return [...byRole.values()]
   }
 
   /** Подтверждённый номер: сам номер (для накладной), отпечаток (для доказательств подписи) и время согласия. */
@@ -173,13 +188,18 @@ export class BotStore {
     })
   }
 
-  /** Водителю без перевозчика — организация перевозчика, который его позвал. */
-  async setRoleOrg(personId: string, role: Role, orgId: string) {
-    await this.db
-      .update(membership)
-      .set({ orgId })
-      .where(and(eq(membership.personId, personId), eq(membership.role, role), sql`${membership.orgId} is null`))
+  /**
+   * Водитель работает на перевозчика orgId (решение 26.09: перевозчиков у водителя может быть несколько).
+   * Строка без перевозчика превращается в эту, иначе добавляется новая; повторный вызов ничего не меняет.
+   */
+  async ensureDriverOrg(personId: string, orgId: string) {
+    const rows = await this.db.select().from(membership).where(and(eq(membership.personId, personId), eq(membership.role, 'driver')))
+    if (rows.some((r) => r.orgId === orgId)) return
+    const free = rows.find((r) => r.orgId === null)
+    if (free) await this.db.update(membership).set({ orgId }).where(eq(membership.id, free.id))
+    else await this.db.insert(membership).values({ personId, role: 'driver', orgId, isAdmin: false, canSign: false })
   }
+
 
   /** Люди организации в роли: администратор первым. */
   async orgMembers(orgId: string, role: Role) {

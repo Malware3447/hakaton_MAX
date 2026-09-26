@@ -194,12 +194,8 @@ export class Bot {
     if (p.activeRole !== role) await this.store.setActiveRole(p.id, role)
     const erpShipments = r.role === 'shipper' && r.org ? await this.store.erpShipmentCount(r.org.inn) : undefined
     const counts = await this.flows.counts(p.id, role)
-    let trip: { erpRef: string; stateText: string; yourTurn: boolean } | null = null
-    if (role === 'driver') {
-      const t = await this.flows.activeTrip(p.id)
-      if (t) trip = { erpRef: t.erpRef, stateText: STATE_TEXT[t.state], yourTurn: counts.waiting > 0 }
-    }
-    return this.reply(to, roleMenu(r, { erpShipments, note, trip, ...counts }))
+    const trips = role === 'driver' ? (await this.flows.activeTrips(p.id)).map((x) => ({ erpRef: x.erpRef, stateText: STATE_TEXT[x.state] })) : undefined
+    return this.reply(to, roleMenu(r, { erpShipments, note, trips, ...counts }))
   }
 
   // ---------- входящие ----------
