@@ -76,7 +76,7 @@ export function seedRows(seed: PlantSeed, today: Date) {
 
 /** Все таблицы продукта и моделей, кроме служебных миграций и очередей. */
 const RESET_TABLES = [
-  'public.inbox', 'public.event', 'public.dialog', 'public.menu_message', 'public.card',
+  'public.inbox', 'public.event', 'public.form_draft', 'public.dialog', 'public.menu_message', 'public.card',
   'public.signature', 'public.title', 'public.participant', 'public.shipment', 'public.vehicle',
   'public.membership', 'public.person', 'public.org',
   'mock.epd_title', 'mock.epd_document', 'mock.epd_settings', 'mock.erp_writeback', 'mock.erp_shipment', 'mock.org_registry',

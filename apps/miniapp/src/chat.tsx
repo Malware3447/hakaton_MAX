@@ -85,11 +85,11 @@ const lineSummary = (s: Shipment, lines: LineCheck[]) =>
     .filter(Boolean)
     .join('\n')
 
-/** Что бот пришлёт, когда главное действие роли делается в чате. */
+/** Что бот пришлёт, когда главное действие роли делается в чате: карточку перевозки с кнопкой шага. */
 export function chatStepFor(s: Shipment, role: Role, carriers: OrgBrief[]): ChatStep | null {
   const head = `${s.erpRef} · ${route(s)}`
   const cargo = `${s.cargo.places} мест, ${fmtKg(s.cargo.grossKg)}`
-  const base = { shipmentId: s.id }
+  const base = { shipmentId: s.id, handoff: { kind: 'card' } as const }
   if (role === 'shipper' && s.state === 'draft')
     return {
       ...base,
@@ -117,22 +117,12 @@ export function chatStepFor(s: Shipment, role: Role, carriers: OrgBrief[]): Chat
       text: `${head}\nПолучатель подписал приёмку. Подпишите сдачу груза — накладная закроется.`,
       buttons: [{ label: 'Подписать и закрыть (модель)', command: { type: 'carrier.signT4' }, primary: true }],
     }
-  if (role === 'driver' && s.state === 'assigned')
-    return {
-      ...base,
-      text: `Новый рейс ${head}\nПогрузка: ${s.loadingAddress}\nМашина ${s.vehicle?.plate ?? '—'}, груз ${cargo}.`,
-      buttons: [{ label: 'Принять рейс', command: { type: 'driver.acceptTrip' }, primary: true }],
-    }
-  if (role === 'driver' && s.state === 'trip_accepted')
-    return { ...base, text: `${head}\nКогда приедете на склад, нажмите кнопку — отправитель увидит, что машина на месте.`, buttons: [{ label: 'Я на погрузке', command: { type: 'driver.arrivedLoading' }, primary: true }] }
   if (role === 'driver' && s.state === 'loading')
     return {
       ...base,
       text: `${head}\nСверьте груз: ${cargo}.\nНажатие кнопки — ваша простая подпись: груз принят.`,
       buttons: [{ label: 'Всё верно, груз принял', command: { type: 'driver.confirmLoading', remarks: null }, primary: true }],
     }
-  if (role === 'driver' && s.state === 'in_transit')
-    return { ...base, text: `${head}\nКогда приедете к получателю, отметьте прибытие.`, buttons: [{ label: 'Я на выгрузке', command: { type: 'driver.arrivedUnloading' }, primary: true }] }
   if (role === 'driver' && s.state === 'unloading')
     return { ...base, text: `${head}\nСдайте груз получателю: ${cargo}.\nНажатие кнопки — ваша простая подпись о сдаче.`, buttons: [{ label: 'Груз сдал', command: { type: 'driver.confirmDelivered' }, primary: true }] }
   if (role === 'consignee' && s.state === 'received')
@@ -147,6 +137,7 @@ export function chatStepFor(s: Shipment, role: Role, carriers: OrgBrief[]): Chat
 export function remarksChatStep(s: Shipment, remarks: { lines: LineCheck[]; comment: string | null }): ChatStep {
   return {
     shipmentId: s.id,
+    handoff: { kind: 'remarks', remarks },
     text: `${s.erpRef} · замечания при погрузке\n${lineSummary(s, remarks.lines) || 'по позициям расхождений нет'}${remarks.comment ? `\n${remarks.comment}` : ''}\nНажатие кнопки — ваша простая подпись: груз принят с этими замечаниями.`,
     buttons: [{ label: 'Подписать с замечаниями', command: { type: 'driver.confirmLoading', remarks }, primary: true }],
   }
@@ -157,6 +148,7 @@ export function acceptanceChatStep(s: Shipment, acceptance: { result: Acceptance
   const diff = lineSummary(s, acceptance.lines)
   return {
     shipmentId: s.id,
+    handoff: { kind: 'acceptance', acceptance },
     text: `${s.erpRef} · приёмка: ${r}${diff ? `\n${diff}` : ''}${acceptance.comment ? `\n${acceptance.comment}` : ''}\nПодтвердите приёмку — дальше бот попросит подпись «Госключом».`,
     buttons: [{ label: 'Подтвердить приёмку', command: { type: 'consignee.recordAcceptance', acceptance }, primary: true }],
   }

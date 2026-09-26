@@ -1,8 +1,10 @@
+import QRCode from 'qrcode'
 import type {
   Command,
   Company,
   DataSource,
   Driver,
+  FileLink,
   ListQuery,
   Me,
   Notice,
@@ -13,11 +15,12 @@ import type {
   Shipment,
   SignatureKind,
   State,
-  StatusFilter,
   TitleKind,
   Vehicle,
+  VehicleInput,
 } from '../model.ts'
-import { hasDiscrepancy, ROLE_TITLE } from '../texts.ts'
+import { ROLE_TITLE } from '../texts.ts'
+import { listView } from '../list.ts'
 import { SEED } from './seed.ts'
 
 // Мок источника данных для макета: перевозки живут в памяти и ходят по тем же состояниям, что ядро
@@ -51,15 +54,6 @@ const TURN: Record<State, Role | null> = {
 
 const ORDER: State[] = ['draft', 'offered', 'carrier_accepted', 'assigned', 'trip_accepted', 'loading', 'loaded', 't1_signed', 'registering', 'in_transit', 'unloading', 'receiving', 'received', 't3_signed', 'closed']
 const reached = (s: State, from: State) => s !== 'cancelled' && ORDER.indexOf(s) >= ORDER.indexOf(from)
-
-const STATUS_GROUP: Record<Exclude<StatusFilter, 'discrepancy'>, State[]> = {
-  new: ['draft'],
-  carrier: ['offered', 'carrier_accepted', 'assigned'],
-  loading: ['trip_accepted', 'loading', 'loaded', 't1_signed', 'registering'],
-  transit: ['in_transit', 'unloading'],
-  receiving: ['receiving', 'received', 't3_signed'],
-  closed: ['closed', 'cancelled'],
-}
 
 type Actor = { name: string; role: Role | 'erp' | 'operator'; me: boolean }
 
@@ -98,6 +92,7 @@ interface World {
 }
 
 export class MockData implements DataSource {
+  readonly features = { invite: true, photos: true, addDriver: true }
   private w!: World
   private listeners = new Set<(e: ShipEvent | null) => void>()
   private timers: ReturnType<typeof setTimeout>[] = []
@@ -119,9 +114,9 @@ export class MockData implements DataSource {
     this.w = {
       shipments: [],
       vehicles: [
-        ...SEED.vehicles.map((v) => ({ id: v.id, plate: v.plate, brand: v.brand, ownership: own[v.ownership] ?? 'other', carrierId: v.carrierId, busyWith: null })),
+        ...SEED.vehicles.map((v) => ({ id: v.id, plate: v.plate, brand: v.brand, ownership: own[v.ownership] ?? 'other', ownerName: null, bodyType: 'Тентованный', capacityT: 20, volumeM3: 82, carrierId: v.carrierId, busyWith: null })),
         // свободная машина перевозчика, чтобы ОТГ-2026-1040 было на чём везти
-        { id: 'veh-free', plate: 'Р318ТК116', brand: 'ГАЗон Next (тент)', ownership: 'own' as Ownership, carrierId: MY_CARRIER, busyWith: null },
+        { id: 'veh-free', plate: 'Р318ТК116', brand: 'ГАЗон Next', ownership: 'own' as Ownership, ownerName: null, bodyType: 'Тентованный', capacityT: 5, volumeM3: 30, carrierId: MY_CARRIER, busyWith: null },
       ],
       drivers,
       activeRole: 'shipper',
@@ -157,6 +152,8 @@ export class MockData implements DataSource {
         uid: null,
         titles: [],
         events: [],
+        canAct: true,
+        handledBy: null,
       }
       this.w.shipments.push(sh)
       const target = start.state
@@ -236,6 +233,8 @@ export class MockData implements DataSource {
       uid: null,
       titles: [],
       events: [],
+      canAct: true,
+      handledBy: null,
     }
     this.w.shipments.unshift(sh)
     this.event(sh, { name: 'учётная система завода', role: 'erp', me: false }, 'Отгрузка пришла из учётной системы', Date.now(), 'shipper')
@@ -252,7 +251,7 @@ export class MockData implements DataSource {
         role,
         title: ROLE_TITLE[role],
         orgName: role === 'driver' ? SEED.carriers[0]!.name : this.w.companies[role].name,
-        waiting: this.visible(role).filter((s) => s.turn === role).length,
+        waiting: this.visible(role).filter((s) => s.turn === role && this.isMine(s, role)).length,
       })),
     }
   }
@@ -265,36 +264,16 @@ export class MockData implements DataSource {
 
   async list(q: ListQuery) {
     const role = this.w.activeRole
-    const all = this.visible(role)
-    const tabOf = (s: Shipment): ListQuery['tab'] => (s.state === 'closed' || s.state === 'cancelled' ? 'done' : s.turn === role ? 'waiting' : 'active')
-    const counts = { waiting: 0, active: 0, done: 0 }
-    for (const s of all) counts[tabOf(s)]++
-    const today = startOfDay(new Date()).getTime()
-    const items = all.filter((s) => {
-      if (tabOf(s) !== q.tab) return false
-      const text = q.q.trim().toLowerCase()
-      if (text && !`${s.erpRef} ${s.consignee.name} ${s.carrier?.name ?? ''} ${s.unloadingAddress}`.toLowerCase().includes(text)) return false
-      if (q.states.length) {
-        const ok = q.states.some((f) => (f === 'discrepancy' ? hasDiscrepancy(s) : STATUS_GROUP[f].includes(s.state)))
-        if (!ok) return false
-      }
-      if (q.date !== 'all') {
-        const d = startOfDay(new Date(s.plannedLoadingAt)).getTime()
-        if (q.date === 'today' && d !== today) return false
-        if (q.date === 'tomorrow' && d !== today + DAY) return false
-        if (q.date === 'week' && (d < today || d >= today + 7 * DAY)) return false
-      }
-      if (q.carrierIds.length && !q.carrierIds.includes(s.carrier?.id ?? 'none')) return false
-      return true
-    })
-    items.sort((a, b) =>
-      q.tab === 'waiting' ? a.turnSince.localeCompare(b.turnSince) : q.tab === 'done' ? b.turnSince.localeCompare(a.turnSince) : a.plannedLoadingAt.localeCompare(b.plannedLoadingAt),
-    )
-    return { items: structuredClone(items), counts }
+    return listView(this.visible(role).map((s) => this.view(s, role)), role, q)
   }
 
   async shipment(id: string) {
-    return structuredClone(this.get(id))
+    return this.view(this.get(id), this.w.activeRole)
+  }
+
+  /** Копия для роли: в макете человек ведёт всё, что видит в своей роли. */
+  private view(sh: Shipment, role: Role): Shipment {
+    return { ...structuredClone(sh), canAct: this.isMine(sh, role), handledBy: null }
   }
 
   async execute(id: string, cmd: Command) {
@@ -304,7 +283,7 @@ export class MockData implements DataSource {
     this.apply(sh, cmd, { name: ME_NAME, role, me: true }, Date.now())
     this.recountBusy()
     this.after(sh)
-    return structuredClone(sh)
+    return this.view(sh, role)
   }
 
   async carriers() {
@@ -315,14 +294,15 @@ export class MockData implements DataSource {
     return this.w.vehicles.filter((v) => v.carrierId === MY_CARRIER).map(({ carrierId: _, ...v }) => ({ ...v }))
   }
 
-  async saveVehicle(v: { id?: string; plate: string; brand: string; ownership: Ownership }) {
+  async saveVehicle(v: VehicleInput) {
     const plate = v.plate.toUpperCase().replace(/\s+/g, '')
     if (!/^[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}$/.test(plate)) throw new Error('Госномер в формате А245КМ116: буквы кириллицей, без пробелов')
     const dup = this.w.vehicles.find((x) => x.plate === plate && x.id !== v.id && x.carrierId === MY_CARRIER)
     if (dup) throw new Error('Такая машина уже есть в списке')
+    const data = { plate, brand: v.brand.trim(), ownership: v.ownership, ownerName: v.ownerName, bodyType: v.bodyType, capacityT: v.capacityT, volumeM3: v.volumeM3 }
     const existing = v.id ? this.w.vehicles.find((x) => x.id === v.id) : null
-    if (existing) Object.assign(existing, { plate, brand: v.brand.trim(), ownership: v.ownership })
-    else this.w.vehicles.push({ id: `veh-${Date.now()}`, plate, brand: v.brand.trim(), ownership: v.ownership, carrierId: MY_CARRIER, busyWith: null })
+    if (existing) Object.assign(existing, data)
+    else this.w.vehicles.push({ id: `veh-${Date.now()}`, ...data, carrierId: MY_CARRIER, busyWith: null })
     this.emit(null)
     return this.vehicles()
   }
@@ -352,13 +332,13 @@ export class MockData implements DataSource {
     return `https://max.ru/t397_hakaton_max_bot?start=inv_${r}_${Math.random().toString(36).slice(2, 10)}`
   }
 
+  /** Раздел событий текущей роли: у каждой роли свои перевозки — и свои события. */
   async notices(): Promise<Notice[]> {
-    const mine = new Set<string>()
-    for (const r of ['shipper', 'carrier', 'driver', 'consignee'] as Role[]) for (const s of this.visible(r)) mine.add(s.id)
+    const mine = new Set(this.visible(this.w.activeRole).map((s) => s.id))
     return this.w.shipments
       .filter((s) => mine.has(s.id))
       .flatMap((s) => s.events)
-      .filter((e) => !e.actor.startsWith(ME_NAME))
+      .filter((e) => !e.mine)
       .sort((a, b) => b.at.localeCompare(a.at))
       .slice(0, 60)
       .map((event) => ({ event, read: new Date(event.at).getTime() <= this.w.readAt }))
@@ -367,6 +347,17 @@ export class MockData implements DataSource {
   async markRead() {
     this.w.readAt = Date.now()
     this.emit(null)
+  }
+
+  /** Тот же QR, что выдаёт модель оператора ЭПД (core/qr-gif.ts), только без анимации. */
+  async qr(id: string) {
+    const sh = this.get(id)
+    return QRCode.toDataURL(JSON.stringify({ uid: sh.uid, number: sh.erpRef, model: true }), { margin: 1, width: 640, errorCorrectionLevel: 'M' })
+  }
+
+  /** В макете файлов накладной нет: XML собирает сервер. */
+  async files(): Promise<FileLink[]> {
+    return []
   }
 
   subscribe(cb: (e: ShipEvent | null) => void) {
@@ -504,7 +495,7 @@ export class MockData implements DataSource {
   }
 
   private event(sh: Shipment, who: Actor, text: string, at: number, turnFor: Role | null = null, live = true) {
-    const e: ShipEvent = { id: `e${++this.w.seq}`, at: new Date(at).toISOString(), shipmentId: sh.id, erpRef: sh.erpRef, text, actor: who.me ? `${ME_NAME}` : who.name, turnFor }
+    const e: ShipEvent = { id: `e${++this.w.seq}`, at: new Date(at).toISOString(), shipmentId: sh.id, erpRef: sh.erpRef, text, actor: who.me ? `${ME_NAME}` : who.name, mine: who.me, turnFor }
     sh.events.unshift(e)
     if (live) this.emit(e)
   }

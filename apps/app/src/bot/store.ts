@@ -1,7 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm'
 import type { Role } from '@nk/domain'
 import type { Db } from '../db/client.ts'
-import { dialog, membership, mockErpShipment, org, person } from '../db/schema.ts'
+import { dialog, formDraft, membership, mockErpShipment, org, person, shipment, type FormDraft, type LineChecks } from '../db/schema.ts'
 
 // Чтение и запись того, что нужно меню ролей и анкетам. Перевозки — в ядре (HAKATON-24).
 
@@ -42,6 +42,41 @@ export class BotStore {
   async personByMaxUserId(maxUserId: number): Promise<PersonRow | null> {
     const [row] = await this.db.select().from(person).where(eq(person.maxUserId, maxUserId))
     return row ?? null
+  }
+
+  async personById(id: string): Promise<PersonRow | null> {
+    const [row] = await this.db.select().from(person).where(eq(person.id, id))
+    return row ?? null
+  }
+
+  // ---------- черновики форм мини-приложения (HAKATON-42) ----------
+
+  /** Итог формы ждёт нажатия кнопки в чате: там ставится простая подпись. */
+  async saveDraft(personId: string, shipmentId: string, kind: 'remarks' | 'acceptance', payload: FormDraft) {
+    await this.db
+      .insert(formDraft)
+      .values({ personId, shipmentId, kind, payload })
+      .onConflictDoUpdate({ target: [formDraft.personId, formDraft.shipmentId, formDraft.kind], set: { payload, createdAt: new Date() } })
+  }
+
+  async draft(personId: string, shipmentId: string, kind: 'remarks' | 'acceptance'): Promise<FormDraft | null> {
+    const [row] = await this.db
+      .select({ payload: formDraft.payload })
+      .from(formDraft)
+      .where(and(eq(formDraft.personId, personId), eq(formDraft.shipmentId, shipmentId), eq(formDraft.kind, kind)))
+    return row?.payload ?? null
+  }
+
+  async dropDrafts(personId: string, shipmentId: string) {
+    await this.db.delete(formDraft).where(and(eq(formDraft.personId, personId), eq(formDraft.shipmentId, shipmentId)))
+  }
+
+  /** Шаг подписан: сверка по позициям из формы остаётся в перевозке — её видят все участники. */
+  async saveCheck(shipmentId: string, kind: 'loading' | 'acceptance', check: LineChecks) {
+    await this.db
+      .update(shipment)
+      .set(kind === 'loading' ? { loadingCheck: check } : { acceptanceCheck: check })
+      .where(eq(shipment.id, shipmentId))
   }
 
   async roles(personId: string): Promise<RoleInfo[]> {

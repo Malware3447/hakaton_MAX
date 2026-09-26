@@ -70,6 +70,8 @@ export interface ShipEvent {
   text: string
   /** кто сделал: имя человека, «учётная система», «оператор ЭПД (модель)» */
   actor: string
+  /** сделал сам зритель: такие не всплывают и не попадают в раздел событий */
+  mine: boolean
   /** для чьей роли это «ваш ход» — тогда событие попадает в раздел событий как важное */
   turnFor: Role | null
 }
@@ -95,6 +97,13 @@ export interface Shipment {
   uid: string | null
   titles: TitleView[]
   events: ShipEvent[]
+  /**
+   * Зритель — участник перевозки в своей роли и может делать шаги. Коллега по компании видит
+   * перевозку своей организации, но шаги делает тот, кто её ведёт (handledBy).
+   */
+  canAct: boolean
+  /** кто ведёт перевозку в роли зрителя, если не он сам */
+  handledBy: string | null
 }
 
 export interface Vehicle {
@@ -102,8 +111,23 @@ export interface Vehicle {
   plate: string
   brand: string
   ownership: Ownership
+  /** владелец при аренде и лизинге */
+  ownerName: string | null
+  /** для накладной: тип кузова, грузоподъёмность в тоннах, объём кузова в м³ */
+  bodyType: string | null
+  capacityT: number | null
+  volumeM3: number | null
   /** в какой активной перевозке сейчас */
   busyWith: string | null
+}
+
+export type VehicleInput = Pick<Vehicle, 'plate' | 'brand' | 'ownership' | 'ownerName' | 'bodyType' | 'capacityT' | 'volumeM3'> & { id?: string }
+
+/** Файл накладной для скачивания: XML части по формату ФНС или файл подписи. */
+export interface FileLink {
+  label: string
+  name: string
+  url: string
 }
 
 export interface Driver {
@@ -149,12 +173,26 @@ export interface Notice {
   read: boolean
 }
 
-/** Что уходит в чат на подпись или на простой шаг: приложение закрывается, бот присылает сообщение. */
+/**
+ * Что уходит в чат на подпись или на простой шаг: приложение закрывается, бот присылает сообщение.
+ * text и buttons — как это сообщение выглядит (макет рисует его окном), handoff — что попросить у сервера.
+ */
 export interface ChatStep {
   shipmentId: string
   text: string
   buttons: { label: string; command: Command; primary?: boolean }[]
+  handoff: Handoff
 }
+
+export type Handoff =
+  /** главный шаг роли: бот присылает карточку перевозки с кнопкой этого шага */
+  | { kind: 'card' }
+  /** замечания водителя по позициям: бот присылает их итог и кнопку простой подписи */
+  | { kind: 'remarks'; remarks: { lines: LineCheck[]; comment: string | null } }
+  /** приёмка по позициям: бот присылает итог и кнопку простой подписи */
+  | { kind: 'acceptance'; acceptance: { result: AcceptanceResult; lines: LineCheck[]; comment: string | null } }
+  /** новый водитель: бот просит переслать его контакт, машина уже выбрана */
+  | { kind: 'driverContact'; vehicleId: string | null }
 
 export type Command =
   | { type: 'shipper.offerCarrier'; carrierId: string }
@@ -185,20 +223,36 @@ export type StatusFilter = 'new' | 'carrier' | 'loading' | 'transit' | 'receivin
 export type DateFilter = 'all' | 'today' | 'tomorrow' | 'week'
 
 export interface DataSource {
+  /** что источник умеет: в продукте часть разделов пока делается только в чате */
+  readonly features: {
+    /** приглашение сотрудника в компанию ссылкой */
+    invite: boolean
+    /** фото повреждений при приёмке */
+    photos: boolean
+    /** добавить водителя вне рейса; в продукте водитель появляется при назначении на рейс */
+    addDriver: boolean
+  }
   me(): Promise<Me>
   setRole(role: Role): Promise<Me>
   list(q: ListQuery): Promise<{ items: Shipment[]; counts: Record<ListQuery['tab'], number> }>
   shipment(id: string): Promise<Shipment>
-  execute(shipmentId: string, cmd: Command): Promise<Shipment>
+  /** null — после шага перевозка этой роли больше не видна (перевозчик отклонил заявку) */
+  execute(shipmentId: string, cmd: Command): Promise<Shipment | null>
+  /** шаг в чате: в продукте сервер просит бота прислать сообщение, и приложение закрывается; у макета метода нет — он рисует окно «чат с ботом» */
+  toChat?(step: ChatStep): Promise<void>
   carriers(): Promise<OrgBrief[]>
   vehicles(): Promise<Vehicle[]>
-  saveVehicle(v: { id?: string; plate: string; brand: string; ownership: Ownership }): Promise<Vehicle[]>
+  saveVehicle(v: VehicleInput): Promise<Vehicle[]>
   drivers(): Promise<Driver[]>
   company(): Promise<Company>
   saveCompany(patch: { name?: string; address?: string; poa?: { number: string; validTo: string } }): Promise<Company>
   invite(): Promise<string>
   notices(): Promise<Notice[]>
   markRead(): Promise<void>
-  /** что-то поменялось: пересчитать экран. В продукте — SSE или опрос, в макете — мок. */
+  /** картинка QR-кода накладной (src для img) */
+  qr(shipmentId: string): Promise<string>
+  /** XML частей накладной и файлы подписей для скачивания */
+  files(shipmentId: string): Promise<FileLink[]>
+  /** что-то поменялось: пересчитать экран. В продукте — опрос сервера, в макете — мок. */
   subscribe(cb: (e: ShipEvent | null) => void): () => void
 }

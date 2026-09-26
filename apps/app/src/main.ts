@@ -8,7 +8,7 @@ import { BotStore } from './bot/store.ts'
 import { CardStore } from './bot/card-store.ts'
 import { FleetService } from './core/fleet.ts'
 import { InviteService } from './core/invite-service.ts'
-import { ShipmentService, waitingQueue } from './core/shipments.ts'
+import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
 import { MockEpd } from './adapters/mock-epd.ts'
@@ -17,6 +17,8 @@ import { OperatorLink } from './core/operator-link.ts'
 import { DemoCa, FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
 import { DEMO_CA_DIR, GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR, MINIAPP_DIR } from './paths.ts'
 import { registerMiniAppApi, registerMiniAppStatic } from './miniapp/routes.ts'
+import { MiniAppReader } from './miniapp/reader.ts'
+import { MiniAppActions } from './miniapp/actions.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -39,8 +41,12 @@ if (env.DATABASE_URL) {
   if (await seedIfEmpty(db, await readSeed())) app.log.info('база пустая — модели заполнены из сида')
   stops.push(() => pool.end())
 
-  // API мини-приложения не зависит от режима бота: ему нужны база и токен, которым MAX подписывает initData
-  if (env.MAX_BOT_TOKEN) registerMiniAppApi(app, { botToken: env.MAX_BOT_TOKEN, people: new BotStore(db), waiting: (id) => waitingQueue(db, id) })
+  // API мини-приложения не зависит от режима бота: ему нужны база и токен, которым MAX подписывает initData.
+  // Шаги и сообщения в чат появляются, когда запущен бот (miniappActions ниже)
+  let miniappActions: MiniAppActions | null = null
+  if (env.MAX_BOT_TOKEN) {
+    registerMiniAppApi(app, { botToken: env.MAX_BOT_TOKEN, people: new BotStore(db), read: new MiniAppReader(db), actions: () => miniappActions })
+  }
 
   if (env.MAX_MODE !== 'off' && env.MAX_BOT_TOKEN) {
     const api = new MaxApi(env.MAX_BOT_TOKEN)
@@ -101,12 +107,14 @@ if (env.DATABASE_URL) {
     // Оператор ЭПД (HAKATON-39): на хакатоне модель MockEpd, ядро говорит с ним через EpdOperator.
     // Номер накладной после Т1, регистрация в ГИС ЭПД после Т2, QR водителю — отложенными шагами очереди,
     // сбои — ручками в mock.epd_settings
-    const operator = new OperatorLink(db, new MockEpd(db), shipments, titles, {
+    const epd = new MockEpd(db)
+    const operator = new OperatorLink(db, epd, shipments, titles, {
       onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
       later: (task, shipmentId, delayS, arg) => jobs.later({ task, shipmentId, arg }, delayS),
       sendQr: (shipmentId, file) => bot.sendQrToDriver(shipmentId, file),
     })
     for (const task of ['operator.submit', 'operator.poll', 'operator.qr', 'operator.register'] as const) jobs.onLater(task, (j) => operator.run(task, j.shipmentId, j.arg))
+    miniappActions = new MiniAppActions(db, shipments, new BotStore(db), new FleetService(db), bot, epd, app.log)
     jobs.onEffect('submitTitle', (id, e) => (e.kind === 'submitTitle' ? operator.submit(id, e.title) : Promise.resolve()))
     jobs.onEffect('sendQrToDriver', (id) => operator.deliverQr(id))
 

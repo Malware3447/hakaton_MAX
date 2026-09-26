@@ -95,6 +95,15 @@ export const OWNERSHIP_TEXT: Record<Ownership, string> = {
   other: 'другое',
 }
 
+/** Тип кузова — в накладной (Т1); тот же список, что в боте (apps/app/src/bot/trip-flows.ts). */
+export const BODY_TYPES = ['Бортовой', 'Тентованный', 'Фургон', 'Рефрижератор', 'Цистерна', 'Самосвал']
+
+/** Чего не хватает машине для накладной; null — всё есть. */
+export function missingForWaybill(v: { bodyType: string | null; capacityT: number | null; volumeM3: number | null }): string | null {
+  const miss = [!v.bodyType && 'тип кузова', v.capacityT == null && 'грузоподъёмность', v.volumeM3 == null && 'объём'].filter(Boolean)
+  return miss.length ? miss.join(', ') : null
+}
+
 export const REASON_TEXT: Record<DiscrepancyReason, string> = {
   shortage: 'недостача',
   damage: 'бой или повреждение',

@@ -20,6 +20,8 @@ export function CompanyScreen() {
 
   const poaDays = c.poa ? Math.ceil((new Date(c.poa.validTo).getTime() - Date.now()) / DAY) : null
   const signs = role !== 'driver'
+  // Реквизиты, введённые вручную, правит администратор компании в этой роли
+  const admin = c.employees.find((e) => e.isMe)?.isAdmin ?? false
 
   return (
     <Page>
@@ -27,7 +29,8 @@ export function CompanyScreen() {
       <Section
         title="Реквизиты"
         after={
-          !c.verified && (
+          !c.verified &&
+          admin && (
             <Button size="xsmall" variant="ghost" iconBefore={<IconEdit size={16} />} onClick={() => setEditReq(true)}>
               Изменить
             </Button>
@@ -82,16 +85,18 @@ export function CompanyScreen() {
         <Section
           title="Сотрудники"
           after={
-            <Button
-              size="xsmall"
-              variant="ghost"
-              iconBefore={<IconUserPlus size={16} />}
-              onClick={async () => {
-                setInvite(await data.invite())
-              }}
-            >
-              Пригласить
-            </Button>
+            data.features.invite && (
+              <Button
+                size="xsmall"
+                variant="ghost"
+                iconBefore={<IconUserPlus size={16} />}
+                onClick={async () => {
+                  setInvite(await data.invite())
+                }}
+              >
+                Пригласить
+              </Button>
+            )
           }
         >
           <CellList mode="island">
@@ -133,15 +138,25 @@ export function CompanyScreen() {
 
 function ReqSheet(props: { open: boolean; onClose: () => void; name: string; address: string; onSaved: () => void }) {
   const { data } = useApp()
+  const toast = useToast()
   const [name, setName] = useState(props.name)
   const [address, setAddress] = useState(props.address)
+  const save = async () => {
+    try {
+      await data.saveCompany({ name, address })
+      props.onSaved()
+      props.onClose()
+    } catch (e) {
+      toast({ text: e instanceof Error ? e.message : String(e) })
+    }
+  }
   return (
     <Sheet
       open={props.open}
       title="Реквизиты"
       onClose={props.onClose}
       footer={
-        <Button size="large" stretched disabled={!name.trim() || !address.trim()} onClick={async () => (await data.saveCompany({ name, address }), props.onSaved(), props.onClose())}>
+        <Button size="large" stretched disabled={!name.trim() || !address.trim()} onClick={() => void save()}>
           Сохранить
         </Button>
       }
@@ -163,16 +178,27 @@ function ReqSheet(props: { open: boolean; onClose: () => void; name: string; add
 
 function PoaSheet(props: { open: boolean; onClose: () => void; value: { number: string; validTo: string } | null; onSaved: () => void }) {
   const { data } = useApp()
+  const toast = useToast()
   const [number, setNumber] = useState(props.value?.number ?? '')
   const [validTo, setValidTo] = useState(props.value?.validTo?.slice(0, 10) ?? '')
-  const bad = !!validTo && new Date(validTo).getTime() < Date.now()
+  // Действует до конца указанного дня
+  const bad = !!validTo && new Date(`${validTo}T23:59:59`).getTime() < Date.now()
+  const save = async () => {
+    try {
+      await data.saveCompany({ poa: { number: number.trim(), validTo } })
+      props.onSaved()
+      props.onClose()
+    } catch (e) {
+      toast({ text: e instanceof Error ? e.message : String(e) })
+    }
+  }
   return (
     <Sheet
       open={props.open}
       title="Доверенность"
       onClose={props.onClose}
       footer={
-        <Button size="large" stretched disabled={!number.trim() || !validTo || bad} onClick={async () => (await data.saveCompany({ poa: { number: number.trim(), validTo } }), props.onSaved(), props.onClose())}>
+        <Button size="large" stretched disabled={!number.trim() || !validTo || bad} onClick={() => void save()}>
           Сохранить
         </Button>
       }

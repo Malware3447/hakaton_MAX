@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button, Typography } from '@maxhub/max-ui'
-import type { Role, Shipment, TitleKind } from '../model.ts'
+import type { Command, Role, Shipment, State, TitleKind } from '../model.ts'
+import { webApp } from '../bridge.ts'
 import { Loading, Page, useApp, useLoad } from '../shell.tsx'
 import { KV, Note, Section, StageBar, Tabs, TopBar, useToast } from '../ui/kit.tsx'
 import { IconAlert, IconChat, IconDownload, IconQr, IconSignature } from '../ui/icons.tsx'
@@ -44,25 +45,45 @@ export function ShipmentScreen({ id }: { id: string }) {
   )
 }
 
+/** Отметки водителя без подписи: одним нажатием прямо в приложении. */
+const ONE_TAP: Partial<Record<State, { cmd: Command; label: string; done: string }>> = {
+  assigned: { cmd: { type: 'driver.acceptTrip' }, label: 'Принять рейс', done: 'Рейс принят. Когда приедете на склад — «Я на погрузке»' },
+  trip_accepted: { cmd: { type: 'driver.arrivedLoading' }, label: 'Я на погрузке', done: 'Отметили прибытие на погрузку' },
+  in_transit: { cmd: { type: 'driver.arrivedUnloading' }, label: 'Я на выгрузке', done: 'Отметили прибытие на выгрузку' },
+}
+
 function Header({ s }: { s: Shipment }) {
   const { role, data, go, toChat } = useApp()
   const toast = useToast()
   const [carriers] = useLoad(() => data.carriers(), [])
   const [busy, setBusy] = useState(false)
-  const mine = s.turn === role
-  const turnText = s.turn === null ? (s.state === 'registering' ? 'ждём оператора ЭПД (модель)' : null) : mine ? 'ваш ход' : `ход: ${ROLE_TITLE[s.turn].toLowerCase()}`
+  // Ход роли, но перевозку ведёт коллега по компании — шаги делает он
+  const ours = s.turn === role
+  const mine = ours && s.canAct
+  const turnText =
+    s.turn === null
+      ? s.state === 'registering'
+        ? 'ждём оператора ЭПД (модель)'
+        : null
+      : mine
+        ? 'ваш ход'
+        : ours
+          ? `ход вашей компании${s.handledBy ? `: ведёт ${s.handledBy}` : ''}`
+          : `ход: ${ROLE_TITLE[s.turn].toLowerCase()}`
 
-  const accept = async () => {
+  const run = async (cmd: Command, done: string) => {
     setBusy(true)
     try {
-      await data.execute(s.id, { type: 'carrier.accept' })
-      toast({ text: 'Заявка принята. Теперь назначьте машину и водителя' })
+      await data.execute(s.id, cmd)
+      toast({ text: done })
     } catch (e) {
       toast({ text: e instanceof Error ? e.message : String(e) })
     } finally {
       setBusy(false)
     }
   }
+  const accept = () => run({ type: 'carrier.accept' }, 'Заявка принята. Теперь назначьте машину и водителя')
+  const oneTap = role === 'driver' ? ONE_TAP[s.state] : undefined
   const chat = () => {
     const step = chatStepFor(s, role, carriers ?? [])
     if (step) toChat(step)
@@ -104,6 +125,12 @@ function Header({ s }: { s: Shipment }) {
           Принять груз
         </Button>
       )
+    else if (oneTap)
+      actions = (
+        <Button size="large" stretched loading={busy} onClick={() => void run(oneTap.cmd, oneTap.done)}>
+          {oneTap.label}
+        </Button>
+      )
     else if (TODO[s.state])
       actions = (
         <Button size="large" stretched iconBefore={<IconChat size={20} />} onClick={chat}>
@@ -135,7 +162,7 @@ function Header({ s }: { s: Shipment }) {
           Показать QR-код инспектору
         </Button>
       )}
-      {mine && actions && TODO[s.state] && !['offered', 'carrier_accepted', 'receiving'].includes(s.state) && (
+      {mine && actions && TODO[s.state] && !oneTap && !['offered', 'carrier_accepted', 'receiving'].includes(s.state) && (
         <span className="muted small center-text">Подпись и отметки — кнопкой в чате с ботом: так у подписи есть доказательство</span>
       )}
     </div>
@@ -186,8 +213,9 @@ function Summary({ s }: { s: Shipment }) {
 }
 
 function Cargo({ s }: { s: Shipment }) {
-  const check = s.acceptance?.lines ?? s.loadingRemarks?.lines ?? null
-  const label = s.acceptance ? 'Принято' : 'Принял водитель'
+  // Отметки из чата — только текстом (он в «Сводке»), по позициям — из формы приложения
+  const check = (s.acceptance?.lines.length ? s.acceptance.lines : null) ?? (s.loadingRemarks?.lines.length ? s.loadingRemarks.lines : null)
+  const label = s.acceptance?.lines.length ? 'Принято' : 'Принял водитель'
   return (
     <Section title={check ? `Груз: по накладной и ${label.toLowerCase()}` : 'Груз по накладной'}>
       <div className="table-wrap">
@@ -245,9 +273,10 @@ function Cargo({ s }: { s: Shipment }) {
 const TITLE_ROLE: Record<TitleKind, Role[]> = { T1: ['shipper'], T2: ['driver', 'carrier'], T3: ['consignee'], T4: ['driver', 'carrier'] }
 
 function Docs({ s }: { s: Shipment }) {
-  const { go, role } = useApp()
-  const toast = useToast()
-  const download = (what: string) => toast({ text: `${what}: в MAX файл скачается через WebApp.downloadFile. В макете файла нет` })
+  const { go, role, data } = useApp()
+  const [files] = useLoad(() => data.files(s.id), [s.id])
+  // В MAX файл скачивает сам клиент по ссылке; в браузере — обычная загрузка
+  const download = (url: string, name: string) => (webApp?.downloadFile ? webApp.downloadFile(url, name) : window.open(url, '_blank'))
   return (
     <>
       <Section title="Накладная по частям">
@@ -295,14 +324,21 @@ function Docs({ s }: { s: Shipment }) {
         )}
       </Section>
       <Section title="Файлы">
-        <div className="files">
-          <Button size="medium" variant="secondary" iconBefore={<IconDownload size={20} />} onClick={() => download('PDF для чтения')}>
-            PDF
-          </Button>
-          <Button size="medium" variant="secondary" iconBefore={<IconDownload size={20} />} disabled={!s.titles.length} onClick={() => download('XML и подписи по формату ФНС')}>
-            XML и подписи
-          </Button>
-        </div>
+        {!files ? (
+          <Loading />
+        ) : files.length === 0 ? (
+          <Typography.Body variant="small" className="muted pad">
+            Файлы появятся после первой подписи: XML по формату ФНС и файлы подписей
+          </Typography.Body>
+        ) : (
+          <div className="files">
+            {files.map((f) => (
+              <Button key={f.url} size="medium" variant="secondary" iconBefore={<IconDownload size={20} />} onClick={() => download(f.url, f.name)}>
+                {f.label}
+              </Button>
+            ))}
+          </div>
+        )}
       </Section>
     </>
   )

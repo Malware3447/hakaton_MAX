@@ -612,6 +612,11 @@
   gap: 10px;
   align-items: center;
 }
+/* название части и «подписывает …» — двумя строками, а не слитно */
+.ti-head > div {
+  display: flex;
+  flex-direction: column;
+}
 .ti-mark {
   display: inline-grid;
   place-items: center;

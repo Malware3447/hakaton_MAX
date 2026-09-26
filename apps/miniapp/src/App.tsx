@@ -1,23 +1,30 @@
-import { useEffect, useState } from 'react'
-import { Button, CellList, CellSimple, Counter, Spinner, Typography } from '@maxhub/max-ui'
-import { api, ApiError, startSession, type Me, type Role } from './api.ts'
+import { useEffect, useMemo, useState } from 'react'
+import { Button, Spinner, Typography } from '@maxhub/max-ui'
+import { ApiData, ApiError, setRole, startSession, type MeView } from './api.ts'
 import { closeApp, webApp } from './bridge.ts'
+import type { Me, Role } from './model.ts'
+import { Shell, type Route } from './shell.tsx'
 
-// Каркас мини-приложения (HAKATON-42, шаг 1): вход по initData и текущая роль, общая с ботом.
-// Списки и карточка перевозки — следующий шаг, план в docs/mini-prilozhenie.md.
+// Мини-приложение в MAX (HAKATON-42): вход по initData, дальше — те же экраны, что в макете,
+// на данных сервера. startapp: r_<роль> — открыть главную этой роли, s_<id> — открыть перевозку.
 
 type Screen =
   | { kind: 'loading' }
   | { kind: 'outside' }
   | { kind: 'unregistered' }
+  | { kind: 'no_roles' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; me: Me; startParam: string | null }
+  | { kind: 'ready'; me: Me; initial?: Route }
 
-/** startapp: r_<роль> — открыть главную этой роли, s_<id> — открыть перевозку. */
-function roleFromStart(startParam: string | null, me: Me): Role | null {
+function roleFromStart(startParam: string | null, me: MeView): Role | null {
   const m = startParam?.match(/^r_(shipper|carrier|driver|consignee)$/)
   const role = m?.[1] as Role | undefined
   return role && role !== me.activeRole && me.roles.some((r) => r.role === role) ? role : null
+}
+
+function routeFromStart(startParam: string | null): Route | undefined {
+  const m = startParam?.match(/^s_([0-9a-f-]{36})$/i)
+  return m ? { name: 'shipment', id: m[1]! } : undefined
 }
 
 export function App() {
@@ -31,15 +38,25 @@ export function App() {
       const s = await startSession()
       if (!s.registered) return alive && setScreen({ kind: 'unregistered' })
       const role = roleFromStart(s.startParam, s.me)
-      const me = role ? await api.setRole(role) : s.me
-      if (alive) setScreen({ kind: 'ready', me, startParam: s.startParam })
+      const me = role ? await setRole(role) : s.me
+      if (!me.activeRole) return alive && setScreen({ kind: 'no_roles' })
+      if (alive) setScreen({ kind: 'ready', me: { ...me, activeRole: me.activeRole }, initial: routeFromStart(s.startParam) })
     })().catch((e: unknown) => {
-      if (alive) setScreen({ kind: 'error', message: e instanceof ApiError && e.status === 401 ? 'Не удалось подтвердить вход. Откройте приложение из чата заново.' : 'Сервер не ответил. Попробуйте ещё раз.' })
+      if (!alive) return
+      const message =
+        e instanceof ApiError && e.status === 401
+          ? 'Не удалось подтвердить вход. Откройте приложение из чата заново.'
+          : e instanceof Error
+            ? e.message
+            : 'Сервер не ответил. Попробуйте ещё раз.'
+      setScreen({ kind: 'error', message })
     })
     return () => {
       alive = false
     }
   }, [])
+
+  const data = useMemo(() => (screen.kind === 'ready' ? new ApiData(screen.me) : null), [screen])
 
   switch (screen.kind) {
     case 'loading':
@@ -49,10 +66,9 @@ export function App() {
         </div>
       )
     case 'outside':
-      return (
-        <Message title="Откройте из MAX" text="Мини-приложение работает внутри MAX: откройте его кнопкой в чате с ботом «Накладная в кармане»." />
-      )
+      return <Message title="Откройте из MAX" text="Мини-приложение работает внутри MAX: откройте его кнопкой в чате с ботом «Накладная в кармане»." />
     case 'unregistered':
+    case 'no_roles':
       return (
         <Message title="Сначала подключитесь в чате" text="Роли и компания заводятся в чате с ботом. Нажмите /start, выберите роль — и возвращайтесь сюда.">
           <Button size="large" stretched onClick={closeApp}>
@@ -69,7 +85,7 @@ export function App() {
         </Message>
       )
     case 'ready':
-      return <Home me={screen.me} onMe={(me) => setScreen({ ...screen, me })} />
+      return <Shell data={data!} initial={screen.initial} />
   }
 }
 
@@ -81,68 +97,6 @@ function Message(props: { title: string; text: string; children?: React.ReactNod
         {props.text}
       </Typography.Body>
       {props.children}
-    </div>
-  )
-}
-
-function Home({ me, onMe }: { me: Me; onMe: (me: Me) => void }) {
-  const [switching, setSwitching] = useState(false)
-  const [busy, setBusy] = useState<Role | null>(null)
-  const current = me.roles.find((r) => r.role === me.activeRole) ?? me.roles[0]
-
-  if (!current) {
-    return <Message title="Ролей пока нет" text="Заведите роль в чате с ботом: отправитель, перевозчик, водитель или получатель." />
-  }
-
-  const choose = async (role: Role) => {
-    if (role === current.role) return setSwitching(false)
-    setBusy(role)
-    try {
-      onMe(await api.setRole(role))
-      setSwitching(false)
-    } finally {
-      setBusy(null)
-    }
-  }
-  const othersWaiting = me.roles.filter((r) => r.role !== current.role).reduce((n, r) => n + r.waiting, 0)
-
-  return (
-    <div className="page">
-      <CellList mode="island">
-        <CellSimple
-          title={current.title}
-          subtitle={current.orgName ?? 'компания не указана'}
-          after={othersWaiting > 0 && !switching ? <Counter value={othersWaiting} variant="attention" /> : undefined}
-          showChevron
-          onClick={() => setSwitching(!switching)}
-        />
-      </CellList>
-
-      {switching && (
-        <CellList mode="island" header={<Typography.Label variant="small">Сменить роль</Typography.Label>}>
-          {me.roles.map((r) => (
-            <CellSimple
-              key={r.role}
-              title={r.title}
-              subtitle={r.orgName ?? undefined}
-              after={busy === r.role ? <Spinner size={20} /> : r.waiting > 0 ? <Counter value={r.waiting} variant={r.role === current.role ? 'primary' : 'attention'} /> : r.role === current.role ? '✓' : undefined}
-              onClick={() => void choose(r.role)}
-            />
-          ))}
-        </CellList>
-      )}
-
-      <CellList mode="island">
-        <CellSimple
-          title="Ждут вас"
-          subtitle={current.waiting > 0 ? 'перевозки, где сейчас ваш ход' : 'сейчас ничего не ждёт'}
-          after={<Counter value={current.waiting} variant={current.waiting > 0 ? 'primary' : 'mute'} />}
-        />
-      </CellList>
-
-      <Typography.Body variant="small" className="muted note">
-        Здравствуйте, {me.person.name}. Списки перевозок, карточка и документы появятся здесь на следующем шаге.
-      </Typography.Body>
     </div>
   )
 }

@@ -11,6 +11,7 @@ import { S, cb } from './screens.ts'
 import { shipmentList } from './cards.ts'
 import type { Reply, ShipmentFlows, Ui } from './shipment-flows.ts'
 import type { BotStore, DialogState, PersonRow } from './store.ts'
+import type { FormDraft } from '../db/schema.ts'
 
 // Рейс: перевозчик назначает машину и водителя (HAKATON-29, HAKATON-44), водитель проходит
 // погрузку и ставит простую подпись. Перед первой подписью — «Поделиться номером» (решение 24.09).
@@ -27,9 +28,12 @@ type Ctx = Record<string, unknown>
 export const BODY_TYPES = ['Бортовой', 'Тентованный', 'Фургон', 'Рефрижератор', 'Цистерна', 'Самосвал']
 const pairs = <T>(xs: T[]) => xs.reduce<T[][]>((acc, x, i) => (i % 2 ? acc[acc.length - 1]!.push(x) : acc.push([x]), acc), [])
 
-/** Действия с простой подписью: текст кнопки идёт в доказательства, ask — что спросить текстом после. */
-type PepKind = 'load_ok' | 'load_rm' | 'delivered' | 'accept_full' | 'accept_partial' | 'accept_refused'
-const PEP: Record<PepKind, { button: string; ask?: string }> = {
+/**
+ * Действия с простой подписью: текст кнопки идёт в доказательства, ask — что спросить текстом после.
+ * Мини-приложение шлёт в чат кнопки с теми же текстами: в доказательствах — то, что человек нажал.
+ */
+export type PepKind = 'load_ok' | 'load_rm' | 'delivered' | 'accept_full' | 'accept_partial' | 'accept_refused'
+export const PEP: Record<PepKind, { button: string; ask?: string }> = {
   load_ok: { button: 'Всё верно, груз принят' },
   load_rm: {
     button: 'Есть замечания',
@@ -249,6 +253,11 @@ export class TripFlows {
 
   // ---------- водитель ----------
 
+  /** Машину выбрали в мини-приложении (HAKATON-42): здесь — только контакт водителя. */
+  askDriverFor(p: PersonRow, shipmentId: string, vehicleId: string, to: Reply) {
+    return this.askDriver(p, { shipmentId, vehicleId }, to)
+  }
+
   private async askDriver(p: PersonRow, ctx: Ctx, to: Reply) {
     const org = await this.carrierOrg(p)
     const drivers = org ? await this.fleet.drivers(org.id) : []
@@ -369,13 +378,25 @@ export class TripFlows {
     const shipmentId = String(pending.shipmentId)
     if (pending.kind === 'carrier_accept') return this.flows.run(p, { type: 'carrier.accept', shipmentId, payload: {} }, to)
     const kind = pending.kind as PepKind
+    // Итог формы мини-приложения (HAKATON-42): текст для накладной уже собран — не спрашиваем, подписываем его
+    const draft = await this.fromMiniApp(p.id, shipmentId, kind)
+    if (draft) return this.runPep(p, kind, shipmentId, draft.text, evidence, to, draft)
     const ask = PEP[kind].ask
     if (!ask) return this.runPep(p, kind, shipmentId, null, evidence, to)
     await this.store.setDialog(p.id, { step: 'await:pep_text', context: { shipmentId, kind, evidence } })
     await this.ui.reply(to, { text: ask, buttons: [[cb('Отмена', S.view(shipmentId))]] })
   }
 
-  private async runPep(p: PersonRow, kind: PepKind, shipmentId: string, text: string | null, evidence: PepEvidence, to: Reply) {
+  /** Черновик из мини-приложения к этой кнопке: замечания — к «Есть замечания», приёмка — к кнопке с её итогом. */
+  private async fromMiniApp(personId: string, shipmentId: string, kind: PepKind): Promise<FormDraft | null> {
+    if (kind === 'load_rm') return this.store.draft(personId, shipmentId, 'remarks')
+    const result = ({ accept_full: 'full', accept_partial: 'partial', accept_refused: 'refused' } as const)[kind as 'accept_full']
+    if (!result) return null
+    const d = await this.store.draft(personId, shipmentId, 'acceptance')
+    return d?.result === result ? d : null
+  }
+
+  private async runPep(p: PersonRow, kind: PepKind, shipmentId: string, text: string | null, evidence: PepEvidence, to: Reply, draft: FormDraft | null = null) {
     const cmd: Command =
       kind === 'load_ok' || kind === 'load_rm'
         ? { type: 'driver.confirmLoading', shipmentId, payload: { remarks: text, evidence } }
@@ -386,7 +407,11 @@ export class TripFlows {
               shipmentId,
               payload: { result: kind === 'accept_full' ? 'full' : kind === 'accept_partial' ? 'partial' : 'refused', discrepancies: text, evidence },
             }
-    await this.flows.run(p, cmd, to)
+    const res = await this.flows.run(p, cmd, to)
+    if (!res.ok) return
+    // Шаг подписан: сверка по позициям из приложения остаётся в перевозке, черновики больше не нужны
+    if (draft) await this.store.saveCheck(shipmentId, kind === 'load_rm' ? 'loading' : 'acceptance', { lines: draft.lines, comment: draft.comment })
+    await this.store.dropDrafts(p.id, shipmentId)
   }
 
   /** Перед первой подписью — номер телефона кнопкой request_contact, один раз на человека. */

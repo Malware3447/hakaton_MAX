@@ -504,13 +504,17 @@ export class ShipmentFlows {
   // ---------- выполнение ----------
 
   /** Выполнить команду и показать нажавшему, что получилось; note — своё «что получилось» вместо общего. */
-  async run(p: PersonRow, cmd: Command, to: Reply, note?: string) {
+  async run(p: PersonRow, cmd: Command, to: Reply, note?: string): Promise<ExecResult> {
     const res = await this.shipments.execute(cmd, { kind: 'person', personId: p.id, role: byOf(cmd.type) })
-    if (!res.ok) return this.failed(res, to)
+    if (!res.ok) {
+      await this.failed(res, to)
+      return res
+    }
     // Карточку показываем в роли, которая нажала, а если ход остался за этим же человеком в другой роли — в ней
     const next = res.turn && (await this.shipments.rolesIn(cmd.shipmentId, p.id)).includes(res.turn) ? res.turn : byOf(cmd.type)
     await this.showCard(p, cmd.shipmentId, to, note ?? DONE[cmd.type], next)
     await this.afterTransition(res, { personId: p.id, role: byOf(cmd.type) })
+    return res
   }
 
   private async decline(p: PersonRow, d: DialogState, reason: string, to: Reply) {

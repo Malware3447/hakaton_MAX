@@ -3,7 +3,8 @@ import { Loading, Page, useApp, useLoad } from '../shell.tsx'
 import { Empty, TopBar } from '../ui/kit.tsx'
 import { fmtDay, ROLE_TITLE } from '../texts.ts'
 
-// Раздел событий по всем ролям человека. Непрочитанное отмечено; открыли раздел — всё прочитано.
+// Раздел событий текущей роли: только её перевозки, как и всё в приложении. Непрочитанное отмечено;
+// открыли раздел — всё прочитано. О ходе в других ролях говорит счётчик у переключателя ролей.
 
 export function EventsScreen() {
   const { back, data, go } = useApp()

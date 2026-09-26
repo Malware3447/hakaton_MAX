@@ -190,7 +190,7 @@ export function Home() {
 }
 
 function Row({ s, role, tab, onOpen }: { s: Shipment; role: Role; tab: ListQuery['tab']; onOpen: () => void }) {
-  const mine = s.turn === role
+  const mine = s.turn === role && s.canAct
   const warn = hasDiscrepancy(s)
   const who = role === 'consignee' ? s.shipper.name : s.consignee.name
   return (

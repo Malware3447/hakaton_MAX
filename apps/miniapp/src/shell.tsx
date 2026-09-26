@@ -67,7 +67,7 @@ function ShellInner({ data, initial }: { data: DataSource; initial?: Route }) {
     return data.subscribe((e: ShipEvent | null) => {
       setVersion((v) => v + 1)
       void refreshMe()
-      if (e && !e.actor.startsWith('Проверяющий')) {
+      if (e && !e.mine) {
         toast({
           text: (
             <>
@@ -83,9 +83,22 @@ function ShellInner({ data, initial }: { data: DataSource; initial?: Route }) {
   const go = useCallback((r: Route) => setStack((s) => [...s, r]), [])
   const back = useCallback(() => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s)), [])
 
+  // В MAX шаг уходит в чат: сервер просит бота прислать сообщение, приложение закрывается.
+  // В макете то же сообщение показывает окно «чат с ботом».
+  const toChat = useCallback(
+    (step: ChatStep) => {
+      if (!data.toChat) return setChat(step)
+      data.toChat(step).then(
+        () => toast({ text: 'Бот прислал сообщение в чат — продолжите там' }),
+        (e: unknown) => toast({ text: e instanceof Error ? e.message : String(e) }),
+      )
+    },
+    [data, toast],
+  )
+
   const ctx = useMemo<Ctx | null>(
-    () => (me ? { data, me, role: me.activeRole, version, refreshMe, go, back, toChat: setChat } : null),
-    [data, me, version, refreshMe, go, back],
+    () => (me ? { data, me, role: me.activeRole, version, refreshMe, go, back, toChat } : null),
+    [data, me, version, refreshMe, go, back, toChat],
   )
   if (!ctx) return <div className="screen" />
 

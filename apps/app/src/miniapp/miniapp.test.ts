@@ -68,11 +68,24 @@ function fakePeople(): MiniAppPeople & { active: Role | null } {
 async function api() {
   const app = Fastify()
   const people = fakePeople()
-  registerMiniAppApi(app, {
-    botToken: TOKEN,
-    people,
-    waiting: async () => [{ shipmentId: 's1', erpRef: 'ОТГ-2026-1040', state: 'draft' as never, role: 'shipper', turnSince: now.toISOString() }],
-  })
+  // Чтение экранов — на настоящей базе в miniapp-db.test.ts; здесь только вход и роль
+  const read = {
+    async me(personId: string) {
+      if (personId !== 'p1') return null
+      return {
+        name: 'Марина Соколова',
+        activeRole: people.active,
+        roles: [
+          { role: 'shipper' as const, title: 'Отправитель', orgName: 'Волжский завод масел', waiting: 1 },
+          { role: 'consignee' as const, title: 'Получатель', orgName: 'Волжский завод масел', waiting: 0 },
+        ],
+      }
+    },
+    async scope(personId: string, role: Role) {
+      return personId === 'p1' && (role === 'shipper' || role === 'consignee') ? { personId, role, orgIds: ['o1'] } : null
+    },
+  }
+  registerMiniAppApi(app, { botToken: TOKEN, people, read })
   return { app, people }
 }
 

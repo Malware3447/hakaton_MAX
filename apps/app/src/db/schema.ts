@@ -58,6 +58,8 @@ export const person = pgTable('person', {
   consentAt: timestamp('consent_at', { withTimezone: true }),
   /** текущая роль; null — показываем корневое меню ролей */
   activeRole: text('active_role').$type<Role>(),
+  /** раздел событий мини-приложения, у каждой роли свой: всё, что раньше этого времени, прочитано */
+  eventsSeen: jsonb('events_seen').$type<Partial<Record<Role, string>>>(),
   createdAt: createdAt(),
 })
 
@@ -107,6 +109,11 @@ export const vehicle = pgTable(
 
 // ---------- Перевозка ----------
 
+/** Сверка груза по позициям (мини-приложение, HAKATON-42): сколько принято и почему не сошлось. */
+export interface LineChecks {
+  lines: { sku: string; qty: number; grossKg: number; reason: 'shortage' | 'damage' | 'mismatch' | 'surplus' | null }[]
+  comment: string | null
+}
 
 export const shipment = pgTable(
   'shipment',
@@ -131,6 +138,10 @@ export const shipment = pgTable(
     turnSince: timestamp('turn_since', { withTimezone: true }).notNull().defaultNow(),
     loadingRemarks: text('loading_remarks'),
     acceptance: jsonb('acceptance').$type<{ result: AcceptanceResult; discrepancies: string | null }>(),
+    /** замечания водителя по позициям из мини-приложения; текст для накладной — в loading_remarks */
+    loadingCheck: jsonb('loading_check').$type<LineChecks>(),
+    /** приёмка по позициям из мини-приложения; итог и текст для накладной — в acceptance */
+    acceptanceCheck: jsonb('acceptance_check').$type<LineChecks>(),
     uid: text('uid'),
     operatorDocId: text('operator_doc_id'),
     /** защита от параллельной записи; в кнопки не передаётся */
@@ -243,6 +254,28 @@ export const dialog = pgTable('dialog', {
   context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 })
+
+/** Черновик: сверка по позициям, итог приёмки и текст для накладной, собранный из них. */
+export interface FormDraft extends LineChecks {
+  result?: AcceptanceResult
+  text: string | null
+}
+
+/**
+ * Черновик формы мини-приложения: замечания водителя или приёмка ждут нажатия кнопки в чате —
+ * простая подпись ставится только там. Один на человека, перевозку и вид формы.
+ */
+export const formDraft = pgTable(
+  'form_draft',
+  {
+    personId: uuid('person_id').notNull().references(() => person.id),
+    shipmentId: uuid('shipment_id').notNull().references(() => shipment.id),
+    kind: text('kind').$type<'remarks' | 'acceptance'>().notNull(),
+    payload: jsonb('payload').$type<FormDraft>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.personId, t.shipmentId, t.kind] })],
+)
 
 /** Журнал: из него лента перевозки и метрики. Пишется на каждое действие, включая неудачные. */
 export const event = pgTable(

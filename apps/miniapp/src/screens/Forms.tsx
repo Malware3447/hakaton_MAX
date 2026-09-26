@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Button, CellList, CellSimple, Switch, Textarea, Typography } from '@maxhub/max-ui'
-import type { AcceptanceResult, CargoLine, DiscrepancyReason, LineCheck, Shipment } from '../model.ts'
+import type { AcceptanceResult, CargoLine, DiscrepancyReason, LineCheck, Shipment, Vehicle } from '../model.ts'
 import { Loading, Page, useApp, useLoad } from '../shell.tsx'
 import { BottomBar, Chip, Note, NumberStepper, Section, TopBar, useToast } from '../ui/kit.tsx'
 import { IconCamera, IconChat, IconClose, IconPlus, IconUserPlus } from '../ui/icons.tsx'
 import { acceptanceChatStep, remarksChatStep } from '../chat.tsx'
-import { fmtKg, OWNERSHIP_TEXT, REASON_TEXT } from '../texts.ts'
+import { fmtKg, missingForWaybill, OWNERSHIP_TEXT, REASON_TEXT } from '../texts.ts'
 import { VehicleSheet } from './Fleet.tsx'
 
 // Формы, которые в чате неудобны. Подпись всё равно в чате: «Готово» уводит туда с итогом формы.
@@ -105,7 +105,7 @@ function Photos(props: { value: string[]; onChange: (v: string[]) => void; id: s
 }
 
 export function AcceptanceForm({ id }: { id: string }) {
-  const { back, toChat } = useApp()
+  const { back, toChat, data } = useApp()
   const s = useShipment(id)
   const [checks, setChecks] = useState<LineCheck[] | null>(null)
   const [refused, setRefused] = useState(false)
@@ -124,7 +124,7 @@ export function AcceptanceForm({ id }: { id: string }) {
   return (
     <Page bottom>
       <TopBar title="Приёмка груза" subtitle={s.erpRef} onBack={back} />
-      <Note>Сверьте каждую позицию. Если не сошлось — укажите, сколько принято, причину и сфотографируйте повреждения.</Note>
+      <Note>Сверьте каждую позицию. Если не сошлось — укажите, сколько принято, и причину{data.features.photos ? ', сфотографируйте повреждения' : ''}.</Note>
       <Section>
         <label className="switch-row" htmlFor="refuse">
           <span>
@@ -134,7 +134,7 @@ export function AcceptanceForm({ id }: { id: string }) {
           <Switch id="refuse" checked={refused} onChange={(e) => setRefused(e.target.checked)} />
         </label>
       </Section>
-      {!refused && <LineChecks s={s} value={checks} onChange={setChecks} photos />}
+      {!refused && <LineChecks s={s} value={checks} onChange={setChecks} photos={data.features.photos} />}
       <Section title="Комментарий">
         <Textarea id="acc-comment" placeholder={refused ? 'Почему отказываетесь от груза' : 'Что ещё важно указать в накладной'} value={comment} onChange={(e) => setComment(e.target.value)} rows={3} />
       </Section>
@@ -235,7 +235,7 @@ export function AssignForm({ id }: { id: string }) {
   const [drivers] = useLoad(() => data.drivers(), [])
   const [vehicleId, setVehicleId] = useState<string | null>(null)
   const [driverId, setDriverId] = useState<string | null>(null)
-  const [addOpen, setAddOpen] = useState(false)
+  const [edit, setEdit] = useState<Vehicle | 'new' | null>(null)
   const [busy, setBusy] = useState(false)
   if (!s || !vehicles || !drivers) return <Page><TopBar title="Машина и водитель" onBack={back} /><Loading /></Page>
 
@@ -255,29 +255,41 @@ export function AssignForm({ id }: { id: string }) {
       shipmentId: s.id,
       text: `${s.erpRef}\nПерешлите сюда контакт водителя из записной книжки MAX: скрепка → «Контакт». Если водителя ещё нет в боте, я дам ссылку-приглашение.`,
       buttons: [],
+      handoff: { kind: 'driverContact', vehicleId },
     })
+  // Перевозчик может поехать сам — как «Я сам за рулём» в боте
+  const self = drivers.some((d) => d.isMe) ? [] : [{ id: 'self', name: 'Я сам за рулём', busyWith: null, isMe: true }]
 
   return (
     <Page bottom>
       <TopBar title="Машина и водитель" subtitle={`${s.erpRef} · ${s.cargo.places} мест, ${fmtKg(s.cargo.grossKg)}`} onBack={back} />
-      <Section title="Машина" after={<Button size="xsmall" variant="ghost" iconBefore={<IconPlus size={16} />} onClick={() => setAddOpen(true)}>Добавить</Button>}>
-        <CellList mode="island">
-          {vehicles.map((v) => (
-            <CellSimple
-              key={v.id}
-              title={`${v.plate} · ${v.brand}`}
-              subtitle={v.busyWith ? `в рейсе ${v.busyWith}` : OWNERSHIP_TEXT[v.ownership]}
-              before={<span className="radio-dot" data-on={vehicleId === v.id} />}
-              disabled={!!v.busyWith}
-              onClick={() => !v.busyWith && setVehicleId(v.id)}
-            />
-          ))}
-        </CellList>
+      <Section title="Машина" after={<Button size="xsmall" variant="ghost" iconBefore={<IconPlus size={16} />} onClick={() => setEdit('new')}>Добавить</Button>}>
+        {vehicles.length === 0 ? (
+          <Typography.Body variant="small" className="muted pad">
+            Машин пока нет — добавьте первую
+          </Typography.Body>
+        ) : (
+          <CellList mode="island">
+            {vehicles.map((v) => {
+              const missing = missingForWaybill(v)
+              return (
+                <CellSimple
+                  key={v.id}
+                  title={`${v.plate} · ${v.brand}`}
+                  // Решение 26.09: машина может везти несколько рейсов за раз (сборный груз) — занятость только подсказка
+                  subtitle={missing ? `для накладной не хватает: ${missing} — нажмите, чтобы дополнить` : v.busyWith ? `уже в рейсе ${v.busyWith}` : OWNERSHIP_TEXT[v.ownership]}
+                  before={<span className="radio-dot" data-on={vehicleId === v.id} />}
+                  onClick={() => (missing ? setEdit(v) : setVehicleId(v.id))}
+                />
+              )
+            })}
+          </CellList>
+        )}
       </Section>
       <Section title="Водитель">
         <CellList mode="island">
-          {drivers.map((d) => (
-            <CellSimple key={d.id} title={d.name} subtitle={d.busyWith ? `сейчас в рейсе ${d.busyWith}` : 'свободен'} before={<span className="radio-dot" data-on={driverId === d.id} />} onClick={() => setDriverId(d.id)} />
+          {[...self, ...drivers].map((d) => (
+            <CellSimple key={d.id} title={d.name} subtitle={d.busyWith ? `сейчас в рейсе ${d.busyWith}` : d.id === 'self' ? 'станете и водителем своей компании' : 'свободен'} before={<span className="radio-dot" data-on={driverId === d.id} />} onClick={() => setDriverId(d.id)} />
           ))}
           <CellSimple title="Новый водитель" subtitle="переслать его контакт в чате" before={<IconUserPlus size={22} />} onClick={newDriver} />
         </CellList>
@@ -288,12 +300,13 @@ export function AssignForm({ id }: { id: string }) {
         </Button>
       </BottomBar>
       <VehicleSheet
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
+        open={edit !== null}
+        vehicle={edit === 'new' ? null : edit}
+        onClose={() => setEdit(null)}
         onSaved={(list) => {
           reloadVehicles()
-          const added = list.at(-1)
-          if (added) setVehicleId(added.id)
+          const saved = edit === 'new' ? list.at(-1) : list.find((v) => v.id === (edit as Vehicle | null)?.id)
+          if (saved && !missingForWaybill(saved)) setVehicleId(saved.id)
         }}
       />
     </Page>

@@ -126,6 +126,32 @@ export class Bot {
     return this.flows.afterTransition(res, { personId: '', role: 'shipper' }, reason)
   }
 
+  // ---------- мини-приложение (HAKATON-42) ----------
+
+  /** Шаг сделан в мини-приложении: «ваш ход» следующему, живые карточки — всем участникам, включая сделавшего. */
+  async afterMiniAppStep(res: Extract<ExecResult, { ok: true }>, actor: { personId: string; role: Role }, reason?: string) {
+    await this.flows.afterTransition(res, actor, reason)
+    await this.flows.refreshCards(res.shipmentId, new Set())
+  }
+
+  /** Шаг, который делается в чате: живая карточка перевозки с кнопкой этого шага. */
+  async cardFromMiniApp(personId: string, shipmentId: string, role: Role, note: string) {
+    const p = await this.store.personById(personId)
+    if (p) await this.flows.showCard(p, shipmentId, { kind: 'message', userId: p.maxUserId }, note, role)
+  }
+
+  /** Итог формы мини-приложения с кнопкой простой подписи. */
+  async messageFromMiniApp(personId: string, message: OutMessage) {
+    const p = await this.store.personById(personId)
+    if (p) await this.messenger.send(p.maxUserId, message)
+  }
+
+  /** Новый водитель на рейс: машину выбрали в приложении, бот просит переслать контакт водителя. */
+  async driverContactFromMiniApp(personId: string, shipmentId: string, vehicleId: string) {
+    const p = await this.store.personById(personId)
+    if (p) await this.trips.askDriverFor(p, shipmentId, vehicleId, { kind: 'message', userId: p.maxUserId })
+  }
+
   async handle(u: MaxUpdate): Promise<void> {
     await this.route(u)
   }
