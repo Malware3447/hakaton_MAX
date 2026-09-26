@@ -14,6 +14,7 @@ FROM base AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/app/package.json apps/app/
+COPY apps/miniapp/package.json apps/miniapp/
 COPY packages/domain/package.json packages/domain/
 COPY packages/etrn/package.json packages/etrn/
 RUN npm ci --no-audit --no-fund
@@ -27,13 +28,15 @@ FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
 COPY --from=build /src/apps/app/dist ./dist
+# Мини-приложение (HAKATON-42): сервер отдаёт сборку по /app
+COPY --from=build /src/apps/miniapp/dist ./miniapp
 COPY apps/app/drizzle ./drizzle
 COPY seed ./seed
 COPY certs/goskey ./certs/goskey
 RUN mkdir -p /app/.cache/goskey /app/.cache/demo-ca && chown node:node /app/.cache/goskey /app/.cache/demo-ca
 ENV MIGRATIONS_DIR=/app/drizzle SEED_PATH=/app/seed/plant-seed.json \
     GOSKEY_CERTS_DIR=/app/certs/goskey GOSKEY_CACHE_DIR=/app/.cache/goskey \
-    DEMO_CA_DIR=/app/.cache/demo-ca
+    DEMO_CA_DIR=/app/.cache/demo-ca MINIAPP_DIR=/app/miniapp
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \

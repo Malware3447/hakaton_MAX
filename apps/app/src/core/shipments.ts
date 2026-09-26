@@ -340,13 +340,7 @@ export class ShipmentService {
 
   /** Очередь «ждут вас»: перевозки, где ход за ролью человека; дольше ждущие первыми. */
   async waiting(personId: string, role?: Role): Promise<WaitingItem[]> {
-    const rows = await this.db
-      .select({ shipmentId: shipment.id, erpRef: shipment.erpRef, state: shipment.state, role: participant.role, turnSince: shipment.turnSince })
-      .from(participant)
-      .innerJoin(shipment, and(eq(shipment.id, participant.shipmentId), eq(shipment.turn, participant.role)))
-      .where(and(eq(participant.personId, personId), role ? eq(participant.role, role) : undefined))
-      .orderBy(shipment.turnSince)
-    return rows.map((r) => ({ ...r, turnSince: r.turnSince.toISOString() }))
+    return waitingQueue(this.db, personId, role)
   }
 
   /** Отгрузки отправителя из учётной системы вместе с состоянием перевозки, если она уже заведена. */
@@ -437,4 +431,15 @@ export class ShipmentService {
       .where(and(eq(participant.shipmentId, shipmentId), eq(participant.role, role), isNull(participant.personId)))
     return Boolean(row)
   }
+}
+
+/** Очередь «ждут вас» отдельно от сервиса: её читает и мини-приложение, которому не нужны учётка и очередь заданий. */
+export async function waitingQueue(db: Db, personId: string, role?: Role): Promise<WaitingItem[]> {
+  const rows = await db
+    .select({ shipmentId: shipment.id, erpRef: shipment.erpRef, state: shipment.state, role: participant.role, turnSince: shipment.turnSince })
+    .from(participant)
+    .innerJoin(shipment, and(eq(shipment.id, participant.shipmentId), eq(shipment.turn, participant.role)))
+    .where(and(eq(participant.personId, personId), role ? eq(participant.role, role) : undefined))
+    .orderBy(shipment.turnSince)
+  return rows.map((r) => ({ ...r, turnSince: r.turnSince.toISOString() }))
 }

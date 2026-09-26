@@ -1,0 +1,242 @@
+/* Страница макета вокруг телефона. Свои токены: страница живёт вне обёртки MaxUI. */
+
+:root {
+  --pg-bg: #eef1f5;
+  --pg-ink: #141a24;
+  --pg-muted: #5b6474;
+  --pg-line: #d9dee6;
+  --pg-card: #ffffff;
+  --pg-accent: #2d6cf6;
+  --pg-frame: #1b2030;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --pg-bg: #0f131a;
+    --pg-ink: #e8ecf2;
+    --pg-muted: #98a2b3;
+    --pg-line: #273041;
+    --pg-card: #171c25;
+    --pg-accent: #6b9bff;
+    --pg-frame: #05070b;
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --pg-bg: #0f131a;
+  --pg-ink: #e8ecf2;
+  --pg-muted: #98a2b3;
+  --pg-line: #273041;
+  --pg-card: #171c25;
+  --pg-accent: #6b9bff;
+  --pg-frame: #05070b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--pg-bg);
+  color: var(--pg-ink);
+  font-family: Roboto, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.demo {
+  display: grid;
+  grid-template-columns: minmax(280px, 400px) auto;
+  justify-content: center;
+  gap: 40px;
+  height: 100%;
+  padding-inline: 24px;
+  box-sizing: border-box;
+}
+
+.panel {
+  align-self: center;
+  max-height: calc(100% - 48px);
+  overflow-y: auto;
+}
+.panel-toggle {
+  display: none;
+}
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-block: 24px;
+}
+.eyebrow {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pg-muted);
+}
+.panel h1 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 700;
+  text-wrap: balance;
+}
+.panel h2 {
+  margin: 12px 0 0;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pg-muted);
+}
+.lead {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.steps {
+  margin: 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.steps li::marker {
+  color: var(--pg-accent);
+  font-weight: 700;
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.controls button,
+.seg button,
+.panel-toggle {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--pg-line);
+  border-radius: 10px;
+  background: var(--pg-card);
+  color: var(--pg-ink);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.controls button:hover {
+  border-color: var(--pg-accent);
+}
+.controls button:focus-visible,
+.seg button:focus-visible {
+  outline: 2px solid var(--pg-accent);
+  outline-offset: 2px;
+}
+.seg {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 0;
+}
+.seg button {
+  border-radius: 0;
+}
+.seg button:first-child {
+  border-radius: 10px 0 0 10px;
+}
+.seg button:last-child {
+  border-radius: 0 10px 10px 0;
+  border-left: 0;
+}
+.seg button[aria-checked='true'] {
+  background: var(--pg-accent);
+  border-color: var(--pg-accent);
+  color: #fff;
+}
+.legend {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--pg-muted);
+}
+.legend b {
+  color: var(--pg-ink);
+  font-weight: 600;
+}
+
+.stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-block: 24px;
+}
+.phone {
+  width: 390px;
+  height: min(820px, calc(100vh - 48px));
+  padding: 10px;
+  border-radius: 46px;
+  background: var(--pg-frame);
+  box-shadow: 0 30px 80px rgba(10, 20, 40, 0.28);
+  box-sizing: border-box;
+}
+.phone-screen {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 36px;
+  /* fixed-элементы приложения (шторки, нижняя панель) держатся внутри экрана телефона */
+  transform: translateZ(0);
+  scrollbar-width: none;
+}
+.phone-screen > * {
+  min-height: 100%;
+}
+
+@media (max-width: 860px) {
+  .demo {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding-inline: 0;
+  }
+  .panel {
+    align-self: stretch;
+    max-height: none;
+    padding-inline: 16px;
+    border-bottom: 1px solid var(--pg-line);
+    background: var(--pg-card);
+  }
+  .panel-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    margin-block: 8px;
+  }
+  .panel:not(.panel-open) .panel-body {
+    display: none;
+  }
+  .panel-body {
+    padding-block: 4px 16px;
+  }
+  .stage {
+    flex: 1;
+    padding: 0;
+    min-height: 0;
+  }
+  .phone {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .phone-screen {
+    border-radius: 0;
+  }
+}

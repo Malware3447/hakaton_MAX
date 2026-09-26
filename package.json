@@ -13,13 +13,14 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @nk/app",
-    "build": "npm run build -w @nk/app",
+    "build": "npm run build -w @nk/miniapp && npm run build -w @nk/app",
     "start": "npm run start -w @nk/app",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/miniapp/tsconfig.json",
     "test": "vitest run",
     "check": "npm run typecheck && npm test",
     "db:generate": "npm run db:generate -w @nk/app",
-    "db:reset": "npm run db:reset -w @nk/app"
+    "db:reset": "npm run db:reset -w @nk/app",
+    "dev:miniapp": "npm run dev -w @nk/miniapp"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",

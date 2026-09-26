@@ -8,14 +8,15 @@ import { BotStore } from './bot/store.ts'
 import { CardStore } from './bot/card-store.ts'
 import { FleetService } from './core/fleet.ts'
 import { InviteService } from './core/invite-service.ts'
-import { ShipmentService } from './core/shipments.ts'
+import { ShipmentService, waitingQueue } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
 import { MockEpd } from './adapters/mock-epd.ts'
 import { DemoCaSigner } from './core/demo-signer.ts'
 import { OperatorLink } from './core/operator-link.ts'
 import { DemoCa, FilePkiStore, gostAvailable, verifyGoskeySignature } from '@nk/etrn'
-import { DEMO_CA_DIR, GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR } from './paths.ts'
+import { DEMO_CA_DIR, GOSKEY_CACHE_DIR, GOSKEY_CERTS_DIR, MINIAPP_DIR } from './paths.ts'
+import { registerMiniAppApi, registerMiniAppStatic } from './miniapp/routes.ts'
 import { openDb, readSeed } from './db/boot.ts'
 import { seedIfEmpty } from './db/seed.ts'
 import { loadEnv } from './env.ts'
@@ -28,6 +29,8 @@ import { Inbox } from './bot/inbox.ts'
 const env = loadEnv()
 const deps: AppDeps = {}
 const app = buildApp(env, deps)
+// Мини-приложение (HAKATON-42): сборка по /app, API — ниже, когда есть база и токен
+registerMiniAppStatic(app, MINIAPP_DIR)
 
 const stops: (() => unknown)[] = []
 
@@ -35,6 +38,9 @@ if (env.DATABASE_URL) {
   const { db, pool } = await openDb(env.DATABASE_URL)
   if (await seedIfEmpty(db, await readSeed())) app.log.info('база пустая — модели заполнены из сида')
   stops.push(() => pool.end())
+
+  // API мини-приложения не зависит от режима бота: ему нужны база и токен, которым MAX подписывает initData
+  if (env.MAX_BOT_TOKEN) registerMiniAppApi(app, { botToken: env.MAX_BOT_TOKEN, people: new BotStore(db), waiting: (id) => waitingQueue(db, id) })
 
   if (env.MAX_MODE !== 'off' && env.MAX_BOT_TOKEN) {
     const api = new MaxApi(env.MAX_BOT_TOKEN)

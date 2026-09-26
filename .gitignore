@@ -8,6 +8,7 @@ docs/zadanie/
 
 node_modules/
 dist/
+dist-demo/
 coverage/
 .tools/
 *.log

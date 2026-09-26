@@ -10,3 +10,5 @@ export const GOSKEY_CERTS_DIR = process.env.GOSKEY_CERTS_DIR ?? here('../../../c
 export const GOSKEY_CACHE_DIR = process.env.GOSKEY_CACHE_DIR ?? here('../../../.cache/goskey')
 // Ключи и сертификаты демо-УЦ (HAKATON-36, модель): создаются при первом запуске, в репозиторий не попадают
 export const DEMO_CA_DIR = process.env.DEMO_CA_DIR ?? here('../../../.cache/demo-ca')
+// Сборка мини-приложения (apps/miniapp, npm run build -w @nk/miniapp); сервер отдаёт её по /app
+export const MINIAPP_DIR = process.env.MINIAPP_DIR ?? here('../../miniapp/dist')
