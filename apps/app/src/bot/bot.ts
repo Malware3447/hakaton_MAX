@@ -17,6 +17,8 @@ import type { CardStore } from './card-store.ts'
 import type { FleetService } from '../core/fleet.ts'
 import type { MockErp } from '../adapters/mock-erp.ts'
 import { ImportFlows } from './import-flows.ts'
+import { SP, StaffFlows } from './staff-flows.ts'
+import type { OrgInviteService } from '../core/org-invites.ts'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
 // Спецификация — docs/roli-i-menyu.md.
@@ -68,6 +70,7 @@ export class Bot {
   private readonly trips: TripFlows
   private readonly sign: SignFlows
   private readonly imports: ImportFlows | null
+  private readonly staff: StaffFlows | null
 
   constructor(
     private readonly store: BotStore,
@@ -84,6 +87,8 @@ export class Bot {
     private readonly log: FastifyBaseLogger,
     /** модель учётной системы: загрузка отгрузок из Excel; без неё кнопка отвечает «недоступно» */
     erp: MockErp | null = null,
+    /** люди компании (HAKATON-48) */
+    orgInvites: OrgInviteService | null = null,
   ) {
     this.flows = new ShipmentFlows(
       store,
@@ -107,6 +112,9 @@ export class Bot {
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
     this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
     this.imports = erp ? new ImportFlows(store, erp, directory, messenger, ui, log) : null
+    this.staff = orgInvites
+      ? new StaffFlows(store, orgInvites, messenger, { ...ui, showRole: (p, role, to, note) => this.showRole(p, role, to, note) }, botUsername, log)
+      : null
     // После «Поделиться номером» подпись продолжается сама
     this.trips.onPhone('sign', (p, pending, to) => this.sign.start(p, pending.title as 'T1' | 'T2', String(pending.shipmentId), to))
   }
@@ -162,6 +170,7 @@ export class Bot {
       await this.store.clearDialog(p.id)
       const to: Reply = { kind: 'message', userId: u.user.user_id }
       if (u.payload?.startsWith('inv_')) return this.flows.onInvite(p, u.payload.slice(4), to)
+      if (u.payload?.startsWith('org_') && this.staff) return this.staff.onInvite(p, u.payload.slice(4), to)
       return this.showStart(p, to)
     }
     if (u.update_type === 'message_created' && 'message' in u) {
@@ -182,7 +191,7 @@ export class Bot {
       const contact = m.body.attachments?.find((a) => a.type === 'contact')
       if (contact) {
         const d = await this.store.getDialog(p.id)
-        if (d && ((await this.flows.onContact(p, d, contact, reply)) || (await this.trips.onContact(p, d, contact, reply)))) return
+        if (d && ((this.staff && (await this.staff.onContact(p, d, contact, reply))) || (await this.flows.onContact(p, d, contact, reply)) || (await this.trips.onContact(p, d, contact, reply)))) return
         return this.onContact(contact, reply)
       }
       return this.onText(p, (m.body.text ?? '').trim(), reply)
@@ -241,6 +250,7 @@ export class Bot {
       await this.store.clearDialog(p.id)
       const arg = text.slice('/start'.length).trim()
       if (arg.startsWith('inv_')) return this.flows.onInvite(p, arg.slice(4), to)
+      if (arg.startsWith('org_') && this.staff) return this.staff.onInvite(p, arg.slice(4), to)
       return this.showStart(p, to)
     }
     if (text === '/menu') return this.showRoot(p, to)
@@ -254,15 +264,17 @@ export class Bot {
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
     // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
-    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:', 'xc'].some((x) => payload.startsWith(x))
+    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:', 'xc', 'pq'].some((x) => payload.startsWith(x))
     if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
     if (await this.trips.onButton(p, payload, to)) return
     if (await this.sign.onButton(p, payload, to)) return
     if (this.imports && (await this.imports.onButton(p, payload, to))) return
+    if (this.staff && (await this.staff.onButton(p, payload, to))) return
     if (payload === S.importStart) return this.notify(to, 'Загрузка из Excel сейчас недоступна')
     if (payload === P.root) return this.showRoot(p, to)
     if (payload === P.help) return this.reply(to, helpScreen)
+    if (payload === P.company && this.staff) return this.staff.showCompany(p, to)
     if (payload === P.company) {
       const r = (await this.store.roles(p.id)).find((x) => x.role === p.activeRole)
       return r ? this.reply(to, companyScreen(r)) : this.showRoot(p, to)
@@ -351,9 +363,9 @@ export class Bot {
         return {
           text: t(
             `Компания с ИНН ${ctx.inn} уже подключена в роли «${ROLE_TITLE[ctx.role].toLowerCase()}».`,
-            `Попросите приглашение у ${esc(ctx.takenBy ?? 'её администратора')}.`,
+            `Добавить вас может её администратор ${esc(ctx.takenBy ?? '')}: нажмите «Попросить доступ» — он получит просьбу и решит одной кнопкой.`,
           ),
-          buttons: [[cb('Ввести другой ИНН', P.otherInn)], [cb('В меню', P.toMenu)]],
+          buttons: [...(this.staff ? [[cb('Попросить доступ', SP.request)]] : []), [cb('Ввести другой ИНН', P.otherInn)], [cb('В меню', P.toMenu)]],
         }
       case 'manual_name':
         return { text: t(`ИНН ${ctx.inn} нет в справочнике. Введите реквизиты вручную — отметим их как непроверенные.`, '', 'Название компании:'), buttons: [nav] }

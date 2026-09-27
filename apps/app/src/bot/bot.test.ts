@@ -11,8 +11,9 @@ import { ChainDirectory } from '../adapters/dadata-directory.ts'
 import { openDb, readSeed } from '../db/boot.ts'
 import { resetDemo } from '../db/seed.ts'
 import { buildWorkbook } from '../core/erp-import.ts'
+import { OrgInviteService } from '../core/org-invites.ts'
 import { sampleRows, sampleRowsWithErrors } from '../db/erp-sample.ts'
-import { event, mockEpdTitle, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
+import { event, membership, mockEpdTitle, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
 import type { MaxUpdate } from '../max/types.ts'
 import { MockErp } from '../adapters/mock-erp.ts'
 import { ShipmentService } from '../core/shipments.ts'
@@ -186,7 +187,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     caDir = await mkdtemp(join(tmpdir(), 'nk-bot-demo-ca-'))
     demoCa = new DemoCa(caDir)
     const demo = new DemoCaSigner(conn.db, demoCa, svc, titles, signatures)
-    bot = new Bot(new BotStore(conn.db), out, directory, svc, new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles, signatures, verifier, demo }, 'test-token', 'test_bot', pino({ level: 'silent' }), new MockErp(conn.db))
+    bot = new Bot(new BotStore(conn.db), out, directory, svc, new InviteService(conn.db), new FleetService(conn.db), out, new CardStore(conn.db), { titles, signatures, verifier, demo }, 'test-token', 'test_bot', pino({ level: 'silent' }), new MockErp(conn.db), new OrgInviteService(conn.db))
   })
   afterAll(async () => {
     await conn.pool.end()
@@ -1110,6 +1111,118 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     it('«Загрузить» без свежей проверки — просим файл заново', async () => {
       await act(press(1, 'xc'))
       expect(out.last?.text).toMatch(/Проверка устарела/)
+    })
+  })
+
+  describe('водитель отказался от первого рейса у перевозчика (находка 27.09)', () => {
+    it('по ссылке открыл рейс и отказался — роли водителя у этого перевозчика не остаётся', async () => {
+      await openRef(act, out, '1053')
+      await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
+      await act(contact(1, { user_id: 3, first_name: 'Олег' }))
+      await act(press(3, payloadOf(await openLast(3), 'Принять заявку')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'КАМАЗ 65115')))
+      await act(contact(3, { user_id: 610, first_name: 'Семён' }))
+      const link = tokenIn(out.last)
+      expect(link).not.toBe('')
+
+      await act(started(610, `inv_${link}`))
+      expect(buttons(out.last)).toContain('Отказаться от рейса')
+      await act(press(610, payloadOf(out.last, 'Отказаться от рейса')))
+      await act(press(610, payloadOf(out.last, 'Машина неисправна')))
+      const [p610] = await conn.db.select().from(person).where(eq(person.maxUserId, 610))
+      expect(await conn.db.select().from(membership).where(eq(membership.personId, p610!.id))).toEqual([])
+      await act(press(610, 'root'))
+      expect(buttons(out.last)).toContain('+ Водитель')
+      await act(press(3, 'fleet'))
+      expect(out.last?.text).not.toMatch(/Человек 610/)
+    })
+
+    it('водитель, уже работавший у перевозчика, после отказа остаётся его водителем', async () => {
+      const [p4] = await conn.db.select().from(person).where(eq(person.maxUserId, 4))
+      const before = await conn.db.select().from(membership).where(eq(membership.personId, p4!.id))
+      await act(press(3, 'open:carrier'))
+      await act(press(3, 'tl:carrier'))
+      await act(press(3, payloadOf(out.last, 'ОТГ-2026-1053')))
+      await act(press(3, payloadOf(out.last, 'Назначить машину')))
+      await act(press(3, payloadOf(out.last, 'КАМАЗ 65115')))
+      await act(press(3, payloadOf(out.last, 'Человек 4')))
+      await act(press(4, payloadOf(await openLast(4), 'Отказаться от рейса')))
+      await act(press(4, payloadOf(out.last, 'Заболел')))
+      expect((await conn.db.select().from(membership).where(eq(membership.personId, p4!.id))).map((m) => m.orgId)).toEqual(before.map((m) => m.orgId))
+    })
+  })
+
+  describe('люди компании (HAKATON-48)', () => {
+    it('администратор видит сотрудников и кнопку «Добавить сотрудника»', async () => {
+      await act(press(1, 'open:shipper'))
+      await act(press(1, 'company'))
+      expect(out.last?.text).toMatch(/Сотрудники<\/b> \(1\)\n• Человек 1 \(вы\) — администратор, подписывает/)
+      expect(buttons(out.last)).toEqual(['Добавить сотрудника', 'Назад'])
+    })
+
+    it('контакт того, кого нет в боте, — ссылка; по ней он входит в компанию, администратору — «вошёл»', async () => {
+      await act(press(1, 'pa'))
+      expect(out.last?.text).toMatch(/Перешлите сюда контакт сотрудника/)
+      await act(contact(1, { user_id: 7700, first_name: 'Ольга' }))
+      expect(out.last?.text).toMatch(/Ольга ещё не пользуется ботом[\s\S]*start=org_/)
+      const token = /start=org_([\w-]+)/.exec(out.last!.text)![1]!
+      await act(started(7700, `org_${token}`))
+      expect(out.last?.text).toMatch(/Вы в компании ООО «Волжский завод моторных масел»/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Человек 7700 вошёл в компанию по ссылке, роль «отправитель»/)
+      await act(press(7700, 'company'))
+      expect(out.last?.text).toMatch(/Сотрудники<\/b> \(2\)/)
+      expect(out.last?.text).toMatch(/Добавить сотрудника может администратор/)
+      expect(buttons(out.last)).toEqual(['Назад'])
+      // по той же ссылке второй раз не войти
+      await act(started(7701, `org_${token}`))
+      expect(out.last?.text).toMatch(/уже вошёл другой человек/)
+    })
+
+    it('контакт того, кто уже в боте, — добавляется сразу и получает сообщение', async () => {
+      await act(press(1, 'pa'))
+      await act(contact(1, { user_id: 610, first_name: 'Семён' }))
+      expect(out.last?.text).toMatch(/✅ Человек 610 добавлен в компанию/)
+      expect(out.inbox.get(610)!.at(-1)!.text).toMatch(/Вас добавили в компанию ООО «Волжский завод моторных масел» в роли «отправитель»/)
+    })
+
+    it('ИНН уже подключён — «Попросить доступ»: администратор добавляет одной кнопкой', async () => {
+      await act(press(7720, 'add:shipper'))
+      await act(text(7720, '9782242514'))
+      expect(out.last?.text).toMatch(/уже подключена[\s\S]*Попросить доступ/)
+      await act(press(7720, payloadOf(out.last, 'Попросить доступ')))
+      expect(out.last?.text).toMatch(/Попросил администратора Человек 1/)
+      const ask = out.inbox.get(1)!.at(-1)!
+      expect(ask.text).toMatch(/Человек 7720 просит доступ к компании/)
+      await act(press(1, payloadOf(ask, 'Добавить')))
+      expect(out.last?.text).toMatch(/✅ Человек 7720 добавлен в компанию/)
+      expect(out.inbox.get(7720)!.at(-1)!.text).toMatch(/Вас добавили в компанию/)
+      // повторное нажатие — уже решено
+      await act(press(1, payloadOf(ask, 'Добавить')))
+      expect(out.last?.text).toMatch(/уже решили/)
+    })
+
+    it('отказ в доступе — просившему приходит сообщение, роли нет', async () => {
+      await act(press(7721, 'add:shipper'))
+      await act(text(7721, '9782242514'))
+      await act(press(7721, payloadOf(out.last, 'Попросить доступ')))
+      await act(press(1, payloadOf(out.inbox.get(1)!.at(-1)!, 'Отказать')))
+      expect(out.inbox.get(7721)!.at(-1)!.text).toMatch(/не добавил вас в компанию/)
+      await act(press(7721, 'root'))
+      expect(buttons(out.last)).toContain('+ Отправитель')
+    })
+
+    it('сотрудник другой компании в той же роли добавиться не может', async () => {
+      await act(press(3, 'open:carrier'))
+      await act(press(3, 'company'))
+      await act(press(3, 'pa'))
+      await act(contact(3, { user_id: 7700, first_name: 'Ольга' }))
+      // Ольга — отправитель, роль перевозчика у неё свободна: добавится
+      expect(out.last?.text).toMatch(/✅ Человек 7700 добавлен в компанию/)
+      await act(press(1, 'open:shipper'))
+      await act(press(1, 'pa'))
+      await act(contact(1, { user_id: 7700, first_name: 'Ольга' }))
+      expect(out.last?.text).toMatch(/Человек 7700 уже в компании/)
     })
   })
 })

@@ -225,11 +225,18 @@ export class BotStore {
 
   /**
    * Водитель работает на перевозчика orgId (решение 26.09: перевозчиков у водителя может быть несколько).
+   * pendingShipmentId — рейс, через который он пришёл: до его принятия связь временная.
    * Строка без перевозчика превращается в эту, иначе добавляется новая; повторный вызов ничего не меняет.
    */
-  async ensureDriverOrg(personId: string, orgId: string) {
+  async ensureDriverOrg(personId: string, orgId: string, pendingShipmentId: string | null = null) {
     const rows = await this.db.select().from(membership).where(and(eq(membership.personId, personId), eq(membership.role, 'driver')))
     if (rows.some((r) => r.orgId === orgId)) return
+    // Пришёл через назначение на рейс: связь с перевозчиком временная, пока не примет рейс (находка 27.09).
+    // «Водителя без перевозчика» не трогаем — если откажется, роль у него останется, как была.
+    if (pendingShipmentId) {
+      await this.db.insert(membership).values({ personId, role: 'driver', orgId, isAdmin: false, canSign: false, pendingShipmentId })
+      return
+    }
     const free = rows.find((r) => r.orgId === null)
     if (free) await this.db.update(membership).set({ orgId }).where(eq(membership.id, free.id))
     else await this.db.insert(membership).values({ personId, role: 'driver', orgId, isAdmin: false, canSign: false })

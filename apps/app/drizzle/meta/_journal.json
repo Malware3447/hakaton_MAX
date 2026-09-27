@@ -43,6 +43,13 @@
       "when": 1790460631448,
       "tag": "0005_miniapp_screens",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790506051806,
+      "tag": "0006_org_invite_pending_driver",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   customType,
@@ -46,6 +47,32 @@ export const org = pgTable(
   (t) => [uniqueIndex('org_inn_uq').on(t.inn)],
 )
 
+/**
+ * Приглашение в компанию (HAKATON-48): администратор зовёт сотрудника в свою роль
+ * ссылкой или пересланным контактом; либо человек сам просит доступ, а администратор решает.
+ */
+export const orgInvite = pgTable(
+  'org_invite',
+  {
+    id: id(),
+    orgId: uuid('org_id').notNull().references(() => org.id),
+    role: text('role').$type<Role>().notNull(),
+    /** ссылка https://max.ru/<бот>?start=org_<токен>; у просьбы о доступе пусто */
+    tokenSha256: text('token_sha256'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    invitedByPersonId: uuid('invited_by_person_id').references(() => person.id),
+    /** кого ждали по пересланному контакту */
+    expectedMaxUserId: bigint('expected_max_user_id', { mode: 'number' }),
+    /** человек сам попросил доступ */
+    requestedByPersonId: uuid('requested_by_person_id').references(() => person.id),
+    acceptedPersonId: uuid('accepted_person_id').references(() => person.id),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    declinedAt: timestamp('declined_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('org_invite_token_uq').on(t.tokenSha256), index('org_invite_org_idx').on(t.orgId, t.role)],
+)
+
 export const person = pgTable('person', {
   id: id(),
   /** единственный способ узнать человека и написать ему */
@@ -79,6 +106,11 @@ export const membership = pgTable(
     canSign: boolean('can_sign').notNull().default(false),
     poaNumber: text('poa_number'),
     poaValidTo: timestamp('poa_valid_to', { withTimezone: true }),
+    /**
+     * Водитель пришёл к перевозчику через назначение на рейс и ещё не принял ни одного рейса:
+     * откажется от этого рейса — строка удаляется (находка 27.09). Примет — поле очищается.
+     */
+    pendingShipmentId: uuid('pending_shipment_id').references((): AnyPgColumn => shipment.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
   (t) => [

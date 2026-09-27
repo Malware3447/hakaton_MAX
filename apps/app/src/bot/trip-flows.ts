@@ -299,7 +299,7 @@ export class TripFlows {
       const role = (await this.store.roles(found.id)).find((r) => r.role === 'driver')
       if (role && org) {
         // Водитель другого перевозчика — не отказ: водитель может работать на нескольких (решение 26.09)
-        await this.store.ensureDriverOrg(found.id, org.id)
+        await this.store.ensureDriverOrg(found.id, org.id, String(d.context.shipmentId))
         return this.assign(p, d.context, { personId: found.id }, to)
       }
     }

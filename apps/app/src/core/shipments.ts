@@ -15,7 +15,7 @@ import {
   type WaitingItem,
 } from '@nk/domain'
 import type { Db } from '../db/client.ts'
-import { event, mockErpShipment, org, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
+import { event, membership, mockErpShipment, org, participant, person, shipment, signature, vehicle } from '../db/schema.ts'
 import { INVITE_TTL_MS, newInviteToken } from './invites.ts'
 
 // Ядро перевозки (HAKATON-24). Всё, что меняет перевозку, идёт через execute():
@@ -268,8 +268,53 @@ export class ShipmentService {
         break
       case 'driver.declineTrip':
         await drop('driver')
+        await this.releasePendingDrivers(tx, shipmentId)
+        break
+      case 'shipper.cancel':
+        await this.releasePendingDrivers(tx, shipmentId)
+        break
+      case 'driver.acceptTrip':
+        // здесь invitedBy — сам водитель, принявший рейс
+        if (invitedBy) await this.confirmDriver(tx, shipmentId, invitedBy)
         break
     }
+  }
+
+  /**
+   * Водитель пришёл к перевозчику через этот рейс и не принял его (отказался или перевозку отменили):
+   * связь с перевозчиком не остаётся (находка 27.09). Если у того же перевозчика есть другой его рейс —
+   * связь держится на нём.
+   */
+  private async releasePendingDrivers(tx: Tx, shipmentId: string) {
+    const pending = await tx.select().from(membership).where(and(eq(membership.role, 'driver'), eq(membership.pendingShipmentId, shipmentId)))
+    for (const m of pending) {
+      const [other] = await tx
+        .select({ id: shipment.id })
+        .from(participant)
+        .innerJoin(shipment, eq(shipment.id, participant.shipmentId))
+        .where(
+          and(
+            eq(participant.personId, m.personId),
+            eq(participant.role, 'driver'),
+            m.orgId ? eq(shipment.carrierOrgId, m.orgId) : isNull(shipment.carrierOrgId),
+            sql`${shipment.id} <> ${shipmentId}`,
+            sql`${shipment.state} not in ('cancelled', 'carrier_accepted', 'draft', 'offered')`,
+          ),
+        )
+        .limit(1)
+      if (other) await tx.update(membership).set({ pendingShipmentId: other.id }).where(eq(membership.id, m.id))
+      else await tx.delete(membership).where(eq(membership.id, m.id))
+    }
+  }
+
+  /** Водитель принял рейс — теперь он водитель перевозчика; «водитель без перевозчика» больше не нужен. */
+  private async confirmDriver(tx: Tx, shipmentId: string, personId: string) {
+    const done = await tx
+      .update(membership)
+      .set({ pendingShipmentId: null })
+      .where(and(eq(membership.personId, personId), eq(membership.role, 'driver'), eq(membership.pendingShipmentId, shipmentId)))
+      .returning({ id: membership.id })
+    if (done.length) await tx.delete(membership).where(and(eq(membership.personId, personId), eq(membership.role, 'driver'), isNull(membership.orgId)))
   }
 
   /** Назначить участника вне команд — получатель, который уже есть в боте. */

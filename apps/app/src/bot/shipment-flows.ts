@@ -305,7 +305,7 @@ export class ShipmentFlows {
         return this.acceptInvite(p, invite.id, shipment.consigneeOrgId, to)
       case 'driver':
         // Водитель может работать на нескольких перевозчиков: добавляем ему этого (решение 26.09)
-        if (shipment.carrierOrgId) await this.store.ensureDriverOrg(p.id, shipment.carrierOrgId)
+        if (shipment.carrierOrgId) await this.store.ensureDriverOrg(p.id, shipment.carrierOrgId, shipment.id)
         return this.acceptInvite(p, invite.id, shipment.carrierOrgId, to)
       default:
         return this.ui.reply(to, { text: 'Такие приглашения пока не поддерживаются.', buttons: menu })
