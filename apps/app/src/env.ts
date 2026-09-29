@@ -9,6 +9,12 @@ const EnvSchema = z
     DATABASE_URL: z.string().optional(),
     /** ключ API DaData: справочник организаций по ЕГРЮЛ; без него — только демо-данные и ручной ввод */
     DADATA_API_KEY: z.string().optional(),
+    /** реестр МЧД ФНС: fns — спрашивать m4d.nalog.gov.ru перед приёмом доверенности и подписью, off — не спрашивать */
+    POA_REGISTRY: z.enum(['fns', 'off']).default('fns'),
+    /** адрес проверки статуса МЧД; по умолчанию — тот, что вызывает страница «Проверить МЧД» ФНС */
+    POA_REGISTRY_URL: z.url().optional(),
+    /** заголовок ApiKey для реестра: его отдаёт страница m4d.nalog.gov.ru/EMCHD/check-status */
+    POA_REGISTRY_API_KEY: z.string().optional(),
     PORT: z.coerce.number().int().positive().default(3000),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   })

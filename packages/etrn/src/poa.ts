@@ -183,7 +183,7 @@ export function parsePoa(bytes: Uint8Array): PoaDocument {
 
 // ---------- 2. Проверка содержимого ----------
 
-export type PoaCheckName = 'format' | 'number' | 'issued' | 'valid_to' | 'principal' | 'representative' | 'powers' | 'retrust'
+export type PoaCheckName = 'format' | 'number' | 'issued' | 'valid_to' | 'principal' | 'representative' | 'powers' | 'retrust' | 'registry'
 
 export interface PoaCheck {
   name: PoaCheckName

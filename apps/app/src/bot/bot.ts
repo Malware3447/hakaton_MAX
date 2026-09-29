@@ -19,7 +19,7 @@ import type { MockErp } from '../adapters/mock-erp.ts'
 import { ImportFlows } from './import-flows.ts'
 import { SP, StaffFlows } from './staff-flows.ts'
 import type { OrgInviteService } from '../core/org-invites.ts'
-import { PoaService } from '../core/poa.ts'
+import { PoaService, type PoaRegistry } from '../core/poa.ts'
 import { PoaFlows } from './poa-flows.ts'
 import type { PkiStore } from '@nk/etrn'
 
@@ -86,7 +86,7 @@ export class Bot {
     fleet: FleetService,
     outbox: Outbox,
     private readonly cards: CardStore,
-    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null; poaPki?: PkiStore | null },
+    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null; poaPki?: PkiStore | null; poaRegistry?: PoaRegistry | null },
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -116,7 +116,7 @@ export class Bot {
     }
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
     // МЧД подписантов (HAKATON-49): перед подписью за компанию — руководитель сам, сотрудник по доверенности
-    this.poas = new PoaService(store.db, { pki: signing.poaPki ?? null, registry: null })
+    this.poas = new PoaService(store.db, { pki: signing.poaPki ?? null, registry: signing.poaRegistry ?? null })
     this.poa = new PoaFlows(store, this.poas, ui, (p, then, to) => this.sign.start(p, then.title, then.shipmentId, to), log)
     this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log, undefined, {
       gate: (p, title, shipmentId, role, to) => this.poaGate(p, title, shipmentId, role, to),

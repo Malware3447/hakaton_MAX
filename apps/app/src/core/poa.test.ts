@@ -8,7 +8,7 @@ import { poaSampleXml, SAMPLE_HEAD, SAMPLE_REP } from '../../../../packages/etrn
 import { openDb, readSeed } from '../db/boot.ts'
 import { membership, org, person, poa } from '../db/schema.ts'
 import { resetDemo } from '../db/seed.ts'
-import { PoaService } from './poa.ts'
+import { PoaService, type PoaRegistry, type RegistryStatus } from './poa.ts'
 
 // МЧД подписантов на настоящей базе (HAKATON-49). Нужна TEST_DATABASE_URL — база стирается.
 const url = process.env.TEST_DATABASE_URL
@@ -104,6 +104,87 @@ describe.skipIf(!url)('МЧД подписантов', () => {
     const all = await conn.db.select().from(poa).where(eq(poa.membershipId, marinaM))
     expect(all).toHaveLength(2)
     expect(all.filter((x) => x.replacedAt === null).map((x) => x.number)).toEqual(['11111111-2222-4333-8444-555555555555'])
+  })
+
+  describe('сверка с реестром МЧД ФНС', () => {
+    let answer: RegistryStatus | 'throw' = 'unavailable'
+    const asked: string[] = []
+    const registry: PoaRegistry = {
+      status: async (number) => {
+        asked.push(number)
+        if (answer === 'throw') throw new Error('сеть')
+        return answer
+      },
+    }
+    const withRegistry = () => new PoaService(conn.db, { pki: null, registry })
+    const num = (n: number) => `aaaaaaaa-bbbb-4ccc-8ddd-${String(n).padStart(12, '0')}`
+    const manual = (n: number) => withRegistry().addManual({ membershipId: marinaM, number: num(n), issuedAt: new Date('2026-09-20'), validTo: new Date('2027-03-31'), now })
+    const current = async () => (await conn.db.select().from(poa).where(eq(poa.membershipId, marinaM))).find((x) => x.replacedAt === null)!
+
+    it.each([
+      ['revoked', /отозвана в реестре ФНС/],
+      ['not_found', /не найдена в реестре ФНС/],
+      ['expired', /истекла в реестре ФНС/],
+    ] as const)('реестр ответил %s — доверенность не принимаем и не сохраняем', async (status, msg) => {
+      const before = await current()
+      answer = status
+      const r = await manual(1)
+      expect(r).toMatchObject({ ok: false, poa: null })
+      expect(r.error).toMatch(msg)
+      expect(r.checks.find((c) => c.name === 'registry')).toMatchObject({ ok: false, level: 'error' })
+      expect((await current()).id).toBe(before.id)
+    })
+
+    it('реестр подтвердил — принимаем и запоминаем статус', async () => {
+      answer = 'active'
+      const r = await manual(2)
+      expect(r.ok).toBe(true)
+      expect(r.checks.find((c) => c.name === 'registry')).toMatchObject({ ok: true, level: 'info', message: 'в реестре ФНС действует' })
+      expect(r.poa).toMatchObject({ registryStatus: 'active' })
+      expect(r.poa!.registryCheckedAt).toEqual(now)
+      expect(await withRegistry().gate(marinaId, 'shipper', null, now)).toMatchObject({ ok: true, authority: { kind: 'poa', number: num(2) } })
+    })
+
+    it('реестр молчит — принимаем с пометкой, подпись не блокируем', async () => {
+      answer = 'unavailable'
+      const r = await manual(3)
+      expect(r.ok).toBe(true)
+      expect(r.checks.find((c) => c.name === 'registry')).toMatchObject({ ok: true, level: 'warning' })
+      expect(r.poa).toMatchObject({ registryStatus: 'unchecked' })
+      answer = 'throw'
+      expect(await withRegistry().gate(marinaId, 'shipper', null, now)).toMatchObject({ ok: true })
+      expect((await current()).registryStatus).toBe('unchecked')
+    })
+
+    it('отозвали после приёма — перед подписью реестр это видит, и отзыв не «откатывается»', async () => {
+      asked.length = 0
+      answer = 'revoked'
+      const g = await withRegistry().gate(marinaId, 'shipper', null, now)
+      expect(g).toMatchObject({ ok: false, reason: 'revoked' })
+      expect(g.ok ? '' : g.message).toMatch(new RegExp(`${num(3)} отозвана в реестре ФНС`))
+      expect(asked).toEqual([num(3)])
+      expect(await current()).toMatchObject({ registryStatus: 'revoked', registryCheckedAt: now })
+      answer = 'active'
+      expect(await withRegistry().gate(marinaId, 'shipper', null, now)).toMatchObject({ ok: false, reason: 'revoked' })
+      expect(asked).toHaveLength(1)
+    })
+
+    it('не нашлась в реестре перед подписью — подписать нельзя; новая действующая доверенность снимает запрет', async () => {
+      answer = 'active'
+      await manual(4)
+      answer = 'not_found'
+      const g = await withRegistry().gate(marinaId, 'shipper', null, now)
+      expect(g.ok ? '' : g.message).toMatch(/не найдена в реестре ФНС/)
+      answer = 'active'
+      await manual(5)
+      expect(await withRegistry().gate(marinaId, 'shipper', null, now)).toMatchObject({ ok: true })
+    })
+
+    it('без реестра (выключен) — как раньше: пометки о реестре нет', async () => {
+      const r = await svc.addManual({ membershipId: marinaM, number: num(6), issuedAt: new Date('2026-09-20'), validTo: new Date('2027-03-31'), now })
+      expect(r.ok).toBe(true)
+      expect(r.checks.some((c) => c.name === 'registry')).toBe(false)
+    })
   })
 
   it.skipIf(!gost)('файл с подписью руководителя: подпись проверена; подпись не руководителя — не принимаем', async () => {

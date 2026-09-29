@@ -6,7 +6,7 @@ import { membership, org, participant, person, shipment, vehicle, type LineCheck
 import type { ExecResult, ShipmentService } from '../core/shipments.ts'
 import type { FleetService } from '../core/fleet.ts'
 import type { BotStore } from '../bot/store.ts'
-import { PoaService } from '../core/poa.ts'
+import { PoaService, type PoaRegistry } from '../core/poa.ts'
 import { BODY_TYPES, PEP } from '../bot/trip-flows.ts'
 import { S, cb } from '../bot/screens.ts'
 import { esc } from '../max/messenger.ts'
@@ -63,6 +63,7 @@ export class MiniAppActions {
     private readonly bot: MiniAppBot,
     private readonly operator: EpdOperator | null,
     private readonly log: FastifyBaseLogger,
+    private readonly poaRegistry: PoaRegistry | null = null,
   ) {}
 
   /** Отгрузка из учётной системы своей организации → перевозка. То же, что нажать её в списке бота. */
@@ -261,7 +262,7 @@ export class MiniAppActions {
     }
     // МЧД и «кто подписывает» — своё у каждого подписанта (HAKATON-49); проверки те же, что в боте
     if ((patch.signerKind || patch.poa) && scope.role === 'driver') return fail(400, 'invalid_payload', 'Водитель подтверждает приём и сдачу груза своей подписью — доверенность не нужна')
-    const poas = new PoaService(this.db)
+    const poas = new PoaService(this.db, { pki: null, registry: this.poaRegistry })
     if (patch.signerKind) await poas.setSignerKind(row.m.id, patch.signerKind)
     if (patch.poa) {
       const day = (s: string) => {

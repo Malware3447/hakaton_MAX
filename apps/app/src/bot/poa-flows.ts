@@ -173,7 +173,7 @@ export class PoaFlows {
   }
 
   private async done(p: PersonRow, ctx: Ctx, res: AddResult, to: Reply) {
-    const notes = res.checks.filter((c) => c.level === 'warning').map((c) => `• ${esc(c.message)}`)
+    const notes = res.checks.filter((c) => c.level === 'warning' && c.name !== 'registry').map((c) => `• ${esc(c.message)}`)
     if (!res.ok) {
       const bad = res.checks.filter((c) => !c.ok).map((c) => `• ${esc(c.message)}`)
       await this.store.setDialog(p.id, { step: STEP.wait, context: { membershipId: ctx.membershipId, then: ctx.then ?? null } })
@@ -191,7 +191,7 @@ export class PoaFlows {
         `✅ <b>Доверенность принята</b>: ${esc(poa.number)}, действует до ${poa.validTo.toLocaleDateString('ru-RU')} (${how}).`,
         ...(notes.length ? ['', ...notes] : []),
         '',
-        '<i>Статус в реестре ФНС не проверен: реестр недоступен с нашего сервера (модель).</i>',
+        registryLine(res),
       ].join('\n'),
     })
     if (ctx.then) await this.resume(p, ctx.then, { kind: 'message', userId: p.maxUserId })
@@ -213,3 +213,10 @@ function parseRuDate(s: string): Date | null {
   return d.getUTCDate() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 ? d : null
 }
 
+/** Итог сверки с реестром МЧД ФНС для сообщения «Доверенность принята». */
+function registryLine(res: AddResult) {
+  const r = res.checks.find((c) => c.name === 'registry')
+  if (!r) return '<i>Статус в реестре ФНС не проверялся: сверка с реестром выключена.</i>'
+  if (r.level === 'info') return '🟢 В реестре МЧД ФНС доверенность действует.'
+  return '<i>Реестр МЧД ФНС сейчас не отвечает — статус проверим перед подписью.</i>'
+}

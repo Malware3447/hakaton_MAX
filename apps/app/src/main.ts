@@ -1,5 +1,6 @@
 import { MockDirectory } from './adapters/mock-directory.ts'
 import { ChainDirectory, DadataDirectory } from './adapters/dadata-directory.ts'
+import { FnsPoaRegistry } from './adapters/fns-poa-registry.ts'
 import { MockErp } from './adapters/mock-erp.ts'
 import { OrgLookupCacheDb } from './adapters/org-lookup-cache.ts'
 import { buildApp, type AppDeps } from './app.ts'
@@ -59,6 +60,9 @@ if (env.DATABASE_URL) {
       : new MockDirectory(db)
     if (!env.DADATA_API_KEY) app.log.warn('DADATA_API_KEY не задан — справочник знает только демо-организации')
     const erp = new MockErp(db)
+    // Реестр МЧД ФНС (HAKATON-49): отозванная или незарегистрированная доверенность не принимается и не даёт подписать
+    const poaRegistry =
+      env.POA_REGISTRY === 'fns' ? new FnsPoaRegistry({ url: env.POA_REGISTRY_URL, apiKey: env.POA_REGISTRY_API_KEY ?? null }, app.log) : null
 
     // Очередь заданий: уведомления участникам и последствия переходов (учётка, оператор, QR)
     const cards = new CardStore(db)
@@ -92,6 +96,7 @@ if (env.DATABASE_URL) {
         demo: gost ? new DemoCaSigner(db, new DemoCa(DEMO_CA_DIR), shipments, titles, signatures) : null,
         // Подпись руководителя под файлом МЧД (HAKATON-49): те же корни Минцифры, промежуточные УЦ ФНС скачиваются
         poaPki: gost ? pki : null,
+        poaRegistry,
       },
       env.MAX_BOT_TOKEN,
       me.username,
@@ -119,7 +124,7 @@ if (env.DATABASE_URL) {
       sendQr: (shipmentId, file) => bot.sendQrToDriver(shipmentId, file),
     })
     for (const task of ['operator.submit', 'operator.poll', 'operator.qr', 'operator.register'] as const) jobs.onLater(task, (j) => operator.run(task, j.shipmentId, j.arg))
-    miniappActions = new MiniAppActions(db, shipments, new BotStore(db), new FleetService(db), bot, epd, app.log)
+    miniappActions = new MiniAppActions(db, shipments, new BotStore(db), new FleetService(db), bot, epd, app.log, poaRegistry)
     jobs.onEffect('submitTitle', (id, e) => (e.kind === 'submitTitle' ? operator.submit(id, e.title) : Promise.resolve()))
     jobs.onEffect('sendQrToDriver', (id) => operator.deliverQr(id))
 

@@ -12,10 +12,15 @@ import { membership, org, person, poa } from '../db/schema.ts'
 export type PoaRow = typeof poa.$inferSelect
 export type SignerKind = 'head' | 'employee'
 
-/** Реестр МЧД ФНС. С сервера в США m4d.nalog.gov.ru недоступен, поэтому по умолчанию реестра нет. */
+export type RegistryStatus = 'active' | 'revoked' | 'not_found' | 'expired' | 'unavailable'
+
+/** Реестр МЧД ФНС (FnsPoaRegistry). unavailable — реестр не ответил или ответ не разобран: подпись не блокируем. */
 export interface PoaRegistry {
-  status(number: string, principalInn: string): Promise<'active' | 'revoked' | 'not_found' | 'expired' | 'unavailable'>
+  status(number: string, principalInn: string): Promise<RegistryStatus>
 }
+
+const REGISTRY_BAD: Record<'revoked' | 'not_found' | 'expired', string> = { revoked: 'отозвана', not_found: 'не найдена', expired: 'истекла' }
+const isBad = (s: string | null | undefined): s is keyof typeof REGISTRY_BAD => s === 'revoked' || s === 'not_found' || s === 'expired'
 
 export type SignGate =
   | { ok: true; authority: SignerAuthority }
@@ -94,9 +99,12 @@ export class PoaService {
     const ok = checks.every((c) => c.ok)
     if (!ok) return { ok, checks, error: checks.find((c) => !c.ok)!.message, poa: null }
 
+    const reg = await this.registryCheck(doc.number, ctx.orgInn, checks, input.now)
+    if (!reg.ok) return { ok: false, checks, error: reg.error, poa: null }
     const principal = doc.principals.find((p) => p.inn === ctx.orgInn)!
     const rep = res.representative!
     const row = await this.save(input.membershipId, {
+      ...reg.fields,
       number: doc.number,
       internalNumber: doc.internalNumber,
       issuedAt: noon(doc.issuedAt),
@@ -135,7 +143,10 @@ export class PoaService {
     add('representative', true, 'представитель и доверитель не проверены: введено вручную, без файла', 'warning')
     const ok = checks.every((c) => c.ok)
     if (!ok) return { ok, checks, error: checks.find((c) => !c.ok)!.message, poa: null }
+    const reg = await this.registryCheck(number, ctx.orgInn, checks, now)
+    if (!reg.ok) return { ok: false, checks, error: reg.error, poa: null }
     const row = await this.save(input.membershipId, {
+      ...reg.fields,
       number,
       internalNumber: null,
       issuedAt: input.issuedAt,
@@ -167,6 +178,7 @@ export class PoaService {
     const p = await this.current(m.id)
     if (!p) return { ok: false, reason: 'no_poa', membershipId: m.id, message: `Чтобы подписать за ${company}, нужна машиночитаемая доверенность. Пришлите её файл из реестра ФНС или номер и даты.` }
     if (dayOf(p.validTo) < today(now)) return { ok: false, reason: 'expired', membershipId: m.id, message: `Доверенность ${p.number} закончилась ${p.validTo.toLocaleDateString('ru-RU')}. Пришлите действующую.` }
+    // Отзыв бывает в любой момент, поэтому реестр спрашиваем перед каждой подписью (ответ клиент помнит 10 минут)
     if (this.opts.registry && p.registryStatus !== 'revoked') {
       const status = await this.opts.registry.status(p.number, p.principalInn).catch(() => 'unavailable' as const)
       if (status !== 'unavailable') {
@@ -174,8 +186,8 @@ export class PoaService {
         p.registryStatus = status
       }
     }
-    if (p.registryStatus === 'revoked' || p.registryStatus === 'not_found')
-      return { ok: false, reason: 'revoked', membershipId: m.id, message: `Доверенность ${p.number} ${p.registryStatus === 'revoked' ? 'отозвана' : 'не найдена'} в реестре ФНС. Пришлите действующую.` }
+    if (isBad(p.registryStatus))
+      return { ok: false, reason: 'revoked', membershipId: m.id, message: `Доверенность ${p.number} ${REGISTRY_BAD[p.registryStatus]} в реестре ФНС. Пришлите действующую.` }
     return { ok: true, authority: { kind: 'poa', number: p.number, issuedAt: p.issuedAt, internalNumber: p.internalNumber } }
   }
 
@@ -188,6 +200,22 @@ export class PoaService {
     const [surname = '', name = '', patronymic = null] = p.repName.split(/\s+/)
     const ok = samePerson({ surname, name, patronymic, inn: p.repInn, snils: p.repSnils, position: null }, { name: signer.fullName ?? '', inn: signer.personInn, snils: signer.snils })
     return { ok, message: ok ? `подписал представитель по доверенности ${p.repName}` : `подпись поставил ${signer.fullName ?? 'другой человек'}, а доверенность выдана ${p.repName}` }
+  }
+
+  /** Статус в реестре ФНС при приёме доверенности: отозванную, истёкшую и незарегистрированную не принимаем. */
+  private async registryCheck(number: string, principalInn: string, checks: PoaCheck[], now = new Date()) {
+    const status = this.opts.registry ? await this.opts.registry.status(number, principalInn).catch(() => 'unavailable' as const) : null
+    if (isBad(status)) {
+      const error = `Доверенность ${number} ${REGISTRY_BAD[status]} в реестре ФНС`
+      checks.push({ name: 'registry', ok: false, level: 'error', message: error })
+      return { ok: false as const, error }
+    }
+    if (status === 'active') checks.push({ name: 'registry', ok: true, level: 'info', message: 'в реестре ФНС действует' })
+    else if (status) checks.push({ name: 'registry', ok: true, level: 'warning', message: 'реестр ФНС сейчас не отвечает — проверим статус перед подписью' })
+    return {
+      ok: true as const,
+      fields: status === 'active' ? { registryStatus: 'active' as const, registryCheckedAt: now } : {},
+    }
   }
 
   private async context(membershipId: string) {

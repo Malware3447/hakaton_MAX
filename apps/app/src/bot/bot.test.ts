@@ -247,6 +247,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     await act(text(1, '31.12.2027'))
     expect(out.last?.text).toMatch(/Доверенность принята.*4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f.*31\.12\.2027/s)
     expect(out.last?.text).toMatch(/введена вручную/)
+    expect(out.last?.text).toMatch(/сверка с реестром выключена/)
     await act(press(1, 'company'))
     expect(out.last?.text).toMatch(/не проверены/)
     expect(out.last?.text).toMatch(/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f/)
