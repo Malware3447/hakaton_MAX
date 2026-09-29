@@ -8,4 +8,5 @@ export { FilePkiStore, PkiError, type PkiStore, type TrustAnchors } from './pki.
 export { gostAvailable } from './openssl.ts'
 export { DemoCa, DEMO_CA_NAME, type DemoOrg } from './demo-ca.ts'
 export * from './titles.ts'
+export * from './poa.ts'
 export { decode1251, encode1251, fmtDate, fmtDateTime, fmtTime } from './format.ts'

@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@nk/domain": "*",
+    "fast-xml-parser": "^5.11.2",
     "iconv-lite": "^0.7.3"
   },
   "devDependencies": {

@@ -39,6 +39,8 @@ export interface Signer {
   surname: string | null
   givenName: string | null
   snils: string | null
+  /** ИНН подписанта как физлица (12 цифр) из сертификата: у руководителя — его личный ИНН */
+  personInn: string | null
   organization: string | null
   /** ИНН, который сверяли с грузоотправителем */
   inn: string | null
@@ -91,6 +93,12 @@ export function certificateInn(cert: CertInfo): string | null {
   if (!inn) return null
   const s = normalizeInn(inn)
   return s?.startsWith('00') ? s.slice(2) : s
+}
+
+/** Личный ИНН подписанта из сертификата: 12 цифр; «00» + 10 цифр — это ИНН юрлица у старых сертификатов. */
+function personInnOf(cert: CertInfo): string | null {
+  const s = normalizeInn(cert.subject[OID.inn] ?? '')
+  return s && s.length === 12 && !s.startsWith('00') ? s : null
 }
 
 /** Хеш документа и сведения о подписанте без проверки: чтобы найти, к какому титулу пришёл .sig. */
@@ -277,6 +285,7 @@ export async function verifyGoskeySignature(input: VerifyInput): Promise<GoskeyV
     surname: cert.subject[OID.surname] ?? null,
     givenName: cert.subject[OID.givenName] ?? null,
     snils: cert.subject[OID.snils] ?? null,
+    personInn: personInnOf(cert),
     organization: cert.subject[OID.organization] ?? null,
     inn,
     innSource,

@@ -18,6 +18,8 @@ export const DEMO_CA_NAME = 'Демо-УЦ «Накладная в карман�
 export interface DemoOrg {
   inn: string
   name: string
+  /** руководитель: сертификат выпускается на него, как УКЭП руководителя в УЦ ФНС (нужно для подписи МЧД) */
+  head?: { surname: string; givenName: string; inn: string; snils: string }
 }
 
 async function run(args: string[]) {
@@ -83,22 +85,25 @@ export class DemoCa implements PkiStore {
 
   /** Сертификат организации: ИНН юрлица — в INNLE, ИП (12 цифр) — в ИНН; как у УКЭП. */
   private org(o: DemoOrg) {
-    let p = this.orgs.get(o.inn)
+    const key = o.head ? `${o.inn}-${o.head.inn}` : o.inn
+    let p = this.orgs.get(key)
     if (!p) {
       p = (async () => {
         await this.root()
-        const d = join(this.dir, `org-${o.inn.replace(/\D/g, '')}`)
+        const d = join(this.dir, `org-${key.replace(/[^\d-]/g, '')}`)
         const files = { key: join(d, 'key.pem'), cert: join(d, 'cert.pem') }
         if (!existsSync(files.cert)) {
           await mkdir(d, { recursive: true, mode: 0o700 })
           const inn = o.inn.length === 12 ? `INN=${o.inn}` : `INNLE=${o.inn}`
           const name = subj(o.name)
-          await this.issue(d, `/C=RU/O=${name}/${inn}/CN=${name}`, 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,nonRepudiation', this.rootDir)
+          const h = o.head
+          const who = h ? `/SN=${subj(h.surname)}/GN=${subj(h.givenName)}/SNILS=${h.snils.replace(/\D/g, '')}/INN=${h.inn}` : ''
+          await this.issue(d, `/C=RU/O=${name}/${inn}${who}/CN=${h ? subj(`${h.surname} ${h.givenName}`) : name}`, 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,nonRepudiation', this.rootDir)
         }
         return files
       })()
-      p.catch(() => this.orgs.delete(o.inn))
-      this.orgs.set(o.inn, p)
+      p.catch(() => this.orgs.delete(key))
+      this.orgs.set(key, p)
     }
     return p
   }

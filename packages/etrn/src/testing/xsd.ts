@@ -23,3 +23,11 @@ export async function validateTitle(kind: keyof typeof XSD, bytes: Uint8Array) {
   const res = await validateXML({ xml: [{ fileName: 'title.xml', contents: toUtf8(bytes) }], schema: [{ fileName: name, contents: toUtf8(new Uint8Array(schema)) }] })
   return { valid: res.valid, errors: res.errors.map((e) => e.message) }
 }
+
+/** Проверка МЧД по XSD формата 003 (EMCHD_1). МЧД в UTF-8, перекодировать не нужно. */
+export async function validatePoaXml(xml: string) {
+  const name = 'ON_EMCHD_1_928_00_01_01_01.xsd'
+  const schema = readFileSync(new URL(`../../xsd/${name}`, import.meta.url), 'utf8')
+  const res = await validateXML({ xml: [{ fileName: 'poa.xml', contents: xml }], schema: [{ fileName: name, contents: schema }] })
+  return { valid: res.valid, errors: res.errors.map((e) => e.message) }
+}
