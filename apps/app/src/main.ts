@@ -90,6 +90,8 @@ if (env.DATABASE_URL) {
         verifier: gost ? { verify: (i) => verifyGoskeySignature({ ...i, pki }) } : null,
         // Демо-подпись организации (HAKATON-36, модель): свой УЦ ГОСТ, ключи создаются при первом запуске
         demo: gost ? new DemoCaSigner(db, new DemoCa(DEMO_CA_DIR), shipments, titles, signatures) : null,
+        // Подпись руководителя под файлом МЧД (HAKATON-49): те же корни Минцифры, промежуточные УЦ ФНС скачиваются
+        poaPki: gost ? pki : null,
       },
       env.MAX_BOT_TOKEN,
       me.username,

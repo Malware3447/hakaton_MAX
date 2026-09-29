@@ -28,6 +28,8 @@ export const P = {
   erp: 'f:erp',
   acceptOnly: 'f:accept_only',
   acceptSign: 'f:accept_sign',
+  signerHead: 'f:signer_head',
+  signerEmployee: 'f:signer_employee',
   otherInn: 'f:other_inn',
 } as const
 

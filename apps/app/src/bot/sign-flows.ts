@@ -49,6 +49,12 @@ export class SignFlows {
     private readonly askPhone: (p: PersonRow, pending: Record<string, unknown>, to: Reply) => Promise<void>,
     private readonly log: FastifyBaseLogger,
     private readonly fetchFn?: typeof fetch,
+    /** МЧД подписантов (HAKATON-49): можно ли подписать за компанию и та ли подпись */
+    private readonly poa?: {
+      /** false — подписывать пока нельзя, бот уже спросил, кто подписывает, или доверенность */
+      gate: (p: PersonRow, title: TitleKind, shipmentId: string, role: Role, to: Reply) => Promise<boolean>
+      signerMatches: (p: PersonRow, role: Role, signer: { fullName: string | null; personInn: string | null; snils: string | null }) => Promise<{ ok: boolean; message: string }>
+    },
   ) {}
 
   async onButton(p: PersonRow, payload: string, to: Reply): Promise<boolean> {
@@ -66,6 +72,8 @@ export class SignFlows {
     if (!(await this.shipments.rolesIn(shipmentId, p.id)).includes(spec.role)) return this.ui.notify(to, 'Подписывает другая сторона')
     // Номер подписанта идёт в накладную и в доказательства — сначала он
     if (!p.phone) return this.askPhone(p, { kind: 'sign', title: kind, shipmentId }, to)
+    // Сотрудник подписывает за компанию только по действующей МЧД — до сборки титула: в нём будет СвДовер
+    if (this.poa && !(await this.poa.gate(p, kind, shipmentId, spec.role, to))) return
 
     let t
     try {
@@ -128,6 +136,18 @@ export class SignFlows {
       return true
     }
 
+    // По доверенности подписать должен тот, на кого она выдана
+    if (this.poa && res.signer) {
+      const who = await this.poa.signerMatches(p, spec.role, { fullName: res.signer.fullName, personInn: res.signer.personInn ?? null, snils: res.signer.snils })
+      if (!who.ok) {
+        await this.ui.reply(to, {
+          text: ['<b>Подпись не того человека</b>', '', `• ${esc(who.message)}`, '', 'Подписать по доверенности может только представитель, на которого она выдана.'].join('\n'),
+          buttons: [[cb('Прислать файл заново', `sg:${kind}:${shipmentId}`)]],
+        })
+        return true
+      }
+    }
+
     let signatureId: string
     try {
       signatureId = await this.signatures.record({
@@ -161,6 +181,7 @@ export class SignFlows {
     if (!spec) return this.ui.notify(to, 'Этот титул пока подписывается позже')
     if (!(await this.shipments.rolesIn(shipmentId, p.id)).includes(spec.role)) return this.ui.notify(to, 'Подписывает другая сторона')
     if (!this.demoSigner) return this.ui.notify(to, 'Демо-подпись недоступна: на сервере нет движка ГОСТ')
+    if (this.poa && !(await this.poa.gate(p, kind, shipmentId, spec.role, to))) return
     let signatureId: string
     try {
       const req = await this.demoSigner.request(shipmentId, kind, p.id, spec.role)

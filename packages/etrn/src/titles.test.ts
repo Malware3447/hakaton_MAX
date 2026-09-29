@@ -134,3 +134,32 @@ describe('ФИО из профиля MAX', () => {
     expect(splitName('Марина')).toEqual({ surname: 'Марина', name: 'Марина' })
   })
 })
+
+describe('подписант: руководитель или по доверенности (HAKATON-49)', () => {
+  const t3 = (signer: Parameters<typeof buildT3>[0]['signer']) =>
+    buildT3({
+      createdAt: new Date('2026-09-25T13:10:00Z'),
+      senderId: '2DM-1167049238',
+      receiverId: '2DM-DEMO-OPER',
+      uid: 'a5b0c7e2-3f4d-4e21-9c8b-1d2e3f4a5b6c',
+      consigneeName: 'ООО «Волга»',
+      signer,
+      t2: { fileId: 'ON_TRNACLPPRIN_X', createdAt: new Date('2026-09-25T12:00:00Z'), signatureBase64: Buffer.from('CMS').toString('base64') },
+      acceptance: { result: 'full', discrepancies: null, arrived: new Date('2026-09-25T12:30:00Z'), departed: new Date('2026-09-25T13:05:00Z'), places: 86, grossKg: 2730, unloadingAddress: '420032, г. Казань, ул. Тэцевская, 4' },
+    })
+
+  it('по МЧД: СтатПодп 2 и СвДовер с номером и датой — проходит XSD', async () => {
+    const f = t3({ surname: 'К', name: 'Дмитрий', authority: { kind: 'poa', number: '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', issuedAt: new Date('2026-09-01T12:00:00Z'), internalNumber: 'МЧД-17' } })
+    const xml = decode1251(f.bytes)
+    expect(xml).toMatch(/<Подписант СтатПодп="2">/)
+    expect(xml).toMatch(/<СвДовер ДатаДовер="01\.09\.2026" НомерДовер="МЧД-17" ИдентДовер="4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"\/>/)
+    expect((await validateTitle('T3', f.bytes)).errors).toEqual([])
+  })
+
+  it('руководитель: СтатПодп 1 без СвДовер — проходит XSD', async () => {
+    const f = t3({ surname: 'К', name: 'Дмитрий', authority: { kind: 'head' } })
+    expect(decode1251(f.bytes)).toMatch(/<Подписант СтатПодп="1">/)
+    expect(decode1251(f.bytes)).not.toContain('СвДовер')
+    expect((await validateTitle('T3', f.bytes)).errors).toEqual([])
+  })
+})

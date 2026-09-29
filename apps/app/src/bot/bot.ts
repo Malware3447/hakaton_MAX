@@ -1,4 +1,4 @@
-import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OrgRequisites, type OutMessage, type Role, type SignatureProvider } from '@nk/domain'
+import { ROLES, isValidInn, normalizeInn, type Messenger, type OrgDirectory, type OrgRequisites, type OutMessage, type Role, type SignatureProvider , type TitleKind } from '@nk/domain'
 import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment, MaxUpdate, MaxUser } from '../max/types.ts'
@@ -19,11 +19,14 @@ import type { MockErp } from '../adapters/mock-erp.ts'
 import { ImportFlows } from './import-flows.ts'
 import { SP, StaffFlows } from './staff-flows.ts'
 import type { OrgInviteService } from '../core/org-invites.ts'
+import { PoaService } from '../core/poa.ts'
+import { PoaFlows } from './poa-flows.ts'
+import type { PkiStore } from '@nk/etrn'
 
 // Бот: меню ролей и анкеты (HAKATON-43). Действия с перевозками пока заглушки.
 // Спецификация — docs/roli-i-menyu.md.
 
-type Step = 'inn' | 'confirm' | 'taken' | 'manual_name' | 'manual_address' | 'sign_mode' | 'poa_number' | 'poa_date' | 'erp'
+type Step = 'inn' | 'confirm' | 'taken' | 'manual_name' | 'manual_address' | 'sign_mode' | 'signer_kind' | 'erp'
 
 interface FormCtx {
   role: Role
@@ -33,8 +36,8 @@ interface FormCtx {
   verified?: boolean
   takenBy?: string
   canSign?: boolean
-  poaNumber?: string | null
-  poaValidTo?: string | null
+  /** кто подписывает за компанию (HAKATON-49): руководитель или ИП — сам, сотрудник — по МЧД */
+  signerKind?: 'head' | 'employee' | null
   /** анкета начата по приглашению: после неё принимаем приглашение */
   invite?: string
   /** что показать над первым шагом: превью перевозки из приглашения */
@@ -50,7 +53,7 @@ const STATUS_TEXT: Record<NonNullable<OrgRequisites['status']>, string> = {
   bankrupt: 'в процедуре банкротства',
   reorganizing: 'в процессе реорганизации',
 }
-const TEXT_STEPS: Step[] = ['inn', 'manual_name', 'manual_address', 'poa_number', 'poa_date']
+const TEXT_STEPS: Step[] = ['inn', 'manual_name', 'manual_address']
 const nav = [cb('Назад', P.back), cb('В меню', P.toMenu)]
 
 const fullName = (u: MaxUser) => [u.first_name, u.last_name].filter(Boolean).join(' ')
@@ -69,6 +72,8 @@ export class Bot {
   private readonly flows: ShipmentFlows
   private readonly trips: TripFlows
   private readonly sign: SignFlows
+  private readonly poas: PoaService
+  private readonly poa: PoaFlows
   private readonly imports: ImportFlows | null
   private readonly staff: StaffFlows | null
 
@@ -81,7 +86,7 @@ export class Bot {
     fleet: FleetService,
     outbox: Outbox,
     private readonly cards: CardStore,
-    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null },
+    signing: { titles: TitleService; signatures: SignatureService; verifier: SignatureVerifier | null; demo: SignatureProvider | null; poaPki?: PkiStore | null },
     botToken: string,
     botUsername: string,
     private readonly log: FastifyBaseLogger,
@@ -110,13 +115,29 @@ export class Bot {
       startForm: (p: PersonRow, role: Role, to: Reply, opts: { invite: string; intro: string }) => this.startForm(p, role, to, opts),
     }
     this.trips = new TripFlows(store, shipments, fleet, this.flows, outbox, ui, botToken, botUsername, log)
-    this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log)
+    // МЧД подписантов (HAKATON-49): перед подписью за компанию — руководитель сам, сотрудник по доверенности
+    this.poas = new PoaService(store.db, { pki: signing.poaPki ?? null, registry: null })
+    this.poa = new PoaFlows(store, this.poas, ui, (p, then, to) => this.sign.start(p, then.title, then.shipmentId, to), log)
+    this.sign = new SignFlows(store, shipments, signing.titles, signing.signatures, signing.verifier, signing.demo, messenger, this.flows, ui, (p, pending, to) => this.trips.askPhone(p, pending, to), log, undefined, {
+      gate: (p, title, shipmentId, role, to) => this.poaGate(p, title, shipmentId, role, to),
+      signerMatches: (p, role, signer) => this.poas.signerMatches(p.id, role, null, signer),
+    })
     this.imports = erp ? new ImportFlows(store, erp, directory, messenger, ui, log) : null
     this.staff = orgInvites
       ? new StaffFlows(store, orgInvites, messenger, { ...ui, showRole: (p, role, to, note) => this.showRole(p, role, to, note) }, botUsername, log)
       : null
     // После «Поделиться номером» подпись продолжается сама
     this.trips.onPhone('sign', (p, pending, to) => this.sign.start(p, pending.title as 'T1' | 'T2', String(pending.shipmentId), to))
+  }
+
+  /** Можно ли подписать за компанию; нет — бот сам спросит «кто подписывает» или доверенность и вернётся к подписи. */
+  private async poaGate(p: PersonRow, title: TitleKind, shipmentId: string, role: Role, to: Reply): Promise<boolean> {
+    const g = await this.poas.gate(p.id, role, null)
+    if (g.ok) return true
+    const then = { kind: 'sign' as const, title, shipmentId }
+    if (g.reason === 'ask_kind') await this.poa.askKind(p, g.membershipId, g.message, then, to)
+    else await this.poa.ask(p, g.membershipId, then, to, g.message)
+    return false
   }
 
   /** Последствие inviteConsignee из очереди: позвать получателя, когда машина выехала. */
@@ -182,6 +203,7 @@ export class Bot {
       if (files.length) {
         const d = await this.store.getDialog(p.id)
         if (d && this.imports && (await this.imports.onFiles(p, d, files, reply))) return
+        if (d && (await this.poa.onFiles(p, d, files, reply))) return
         if (d && (await this.sign.onFiles(p, d, files, reply))) return
         return this.reply(reply, {
           text: 'Файл получил, но сейчас его некуда приложить. Если это подпись — сначала нажмите «Подписать накладную» в карточке; если таблица отгрузок — «Загрузить из Excel» в списке отгрузок.',
@@ -258,16 +280,17 @@ export class Bot {
 
     const d = await this.store.getDialog(p.id)
     if (d?.step.startsWith(`${FORM}:`)) return this.formText(p, d, text, to)
-    if (d && ((await this.flows.onText(p, d, text, to)) || (await this.trips.onText(p, d, text, to)))) return
+    if (d && ((await this.poa.onText(p, d, text, to)) || (await this.flows.onText(p, d, text, to)) || (await this.trips.onText(p, d, text, to)))) return
     return this.reply(to, { text: 'Я понимаю кнопки и команды. Откройте меню:', buttons: [[cb('Меню ролей', P.root)]] })
   }
 
   private async onButton(p: PersonRow, payload: string, to: Reply) {
     // Нажатие вне текущего ввода отменяет ожидание: контакт, присланный потом, не назначит случайно
-    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:', 'xc', 'pq'].some((x) => payload.startsWith(x))
+    const inDialog = ['f:', 'dq:', 'cr:', 'avh:', 'nvh', 'own:', 'adr:', 'vb:', 'xc', 'pq', 'pa:'].some((x) => payload.startsWith(x))
     if (!inDialog) await this.store.clearDialog(p.id)
     if (await this.flows.onButton(p, payload, to)) return
     if (await this.trips.onButton(p, payload, to)) return
+    if (await this.poa.onButton(p, payload, to)) return
     if (await this.sign.onButton(p, payload, to)) return
     if (this.imports && (await this.imports.onButton(p, payload, to))) return
     if (this.staff && (await this.staff.onButton(p, payload, to))) return
@@ -376,13 +399,15 @@ export class Bot {
           text: t('Вы только принимаете груз или ещё подписываете документы за компанию?'),
           buttons: [[cb('Только принимаю', P.acceptOnly)], [cb('Принимаю и подписываю', P.acceptSign)], nav],
         }
-      case 'poa_number':
+      case 'signer_kind':
         return {
-          text: t('Номер машиночитаемой доверенности, по которой вы подписываете документы за компанию.', 'Можно указать позже — спросим перед первой подписью.'),
-          buttons: [[cb('Укажу позже', P.later)], nav],
+          text: t(
+            'Кто подписывает документы за компанию?',
+            '',
+            'Руководитель или ИП подписывает сам. Сотрудник — только по машиночитаемой доверенности (МЧД) от компании: одной подписи сотрудника мало.',
+          ),
+          buttons: [[cb('Я руководитель или ИП', P.signerHead)], [cb('Я сотрудник, по доверенности', P.signerEmployee)], nav],
         }
-      case 'poa_date':
-        return { text: t(`Доверенность ${esc(ctx.poaNumber ?? '')}. До какого числа действует? Например, 31.10.2026`), buttons: [nav] }
       case 'erp':
         return {
           text: t('Подключить учётную систему? Тогда отгрузки будут приходить сюда сами.', '', '<i>В этой версии учётная система — модель на демо-данных завода.</i>'),
@@ -393,10 +418,10 @@ export class Bot {
 
   private afterOrg(ctx: FormCtx): { step: Step; ctx: FormCtx } {
     if (ctx.role === 'consignee') return { step: 'sign_mode', ctx }
-    return { step: 'poa_number', ctx: { ...ctx, canSign: true } }
+    return { step: 'signer_kind', ctx: { ...ctx, canSign: true } }
   }
 
-  private async afterPoa(p: PersonRow, ctx: FormCtx, from: Step, to: Reply) {
+  private async afterSigner(p: PersonRow, ctx: FormCtx, from: Step, to: Reply) {
     if (ctx.role === 'shipper') return this.goto(p, ctx, 'erp', to, from)
     return this.finish(p, ctx, false, to)
   }
@@ -408,12 +433,18 @@ export class Bot {
       role: ctx.role,
       org: { inn: req.inn, kpp: req.kpp, name: req.name, address: req.address, verified: ctx.verified ?? true, erpLinked, source: req.source, ogrn: req.ogrn },
       canSign: ctx.canSign ?? false,
-      poaNumber: ctx.poaNumber ?? null,
-      poaValidTo: ctx.poaValidTo ? new Date(ctx.poaValidTo) : null,
+      signerKind: ctx.signerKind ?? null,
+      poaNumber: null,
+      poaValidTo: null,
     })
     await this.store.clearDialog(p.id)
     if (ctx.invite) return this.flows.acceptAfterForm({ ...p, activeRole: ctx.role }, ctx.invite, to)
-    return this.showRole({ ...p, activeRole: ctx.role }, ctx.role, to, `Готово: роль «${ROLE_TITLE[ctx.role].toLowerCase()}» добавлена.`)
+    await this.showRole({ ...p, activeRole: ctx.role }, ctx.role, to, `Готово: роль «${ROLE_TITLE[ctx.role].toLowerCase()}» добавлена.`)
+    // Сотрудник: сразу просим доверенность, её можно отложить до первой подписи
+    if (ctx.signerKind === 'employee') {
+      const m = await this.poas.membershipOf(p.id, ctx.role)
+      if (m) await this.poa.ask(p, m.m.id, null, { kind: 'message', userId: p.maxUserId }, 'Доверенность, по которой вы подписываете за компанию')
+    }
   }
 
   private async formText(p: PersonRow, d: DialogState, text: string, to: Reply) {
@@ -449,15 +480,6 @@ export class Bot {
         const next = this.afterOrg({ ...ctx, req: { ...ctx.req!, address: text }, verified: false })
         return this.goto(p, next.ctx, next.step, to, step)
       }
-      case 'poa_number':
-        if (text.length < 3) return this.goto(p, ctx, step, to, null, 'Слишком коротко.')
-        return this.goto(p, { ...ctx, poaNumber: text }, 'poa_date', to, step)
-      case 'poa_date': {
-        const date = parseRuDate(text)
-        if (!date) return this.goto(p, ctx, step, to, null, 'Такой даты нет — проверьте день и месяц. Формат ДД.ММ.ГГГГ, например 31.10.2026.')
-        if (date.getTime() < Date.now()) return this.goto(p, ctx, step, to, null, 'Доверенность уже истекла — укажите действующую.')
-        return this.afterPoa(p, { ...ctx, poaValidTo: date.toISOString() }, step, to)
-      }
     }
   }
 
@@ -483,7 +505,6 @@ export class Bot {
         if (step === 'confirm' || step === 'taken') return this.goto(p, { role: ctx.role, history: [], invite: ctx.invite }, 'inn', to, null)
         break
       case P.later:
-        if (step === 'poa_number') return this.afterPoa(p, { ...ctx, poaNumber: null, poaValidTo: null }, step, to)
         if (step === 'erp') return this.finish(p, ctx, false, to)
         break
       case P.erp:
@@ -493,7 +514,11 @@ export class Bot {
         if (step === 'sign_mode') return this.finish(p, { ...ctx, canSign: false }, false, to)
         break
       case P.acceptSign:
-        if (step === 'sign_mode') return this.goto(p, { ...ctx, canSign: true }, 'poa_number', to, step)
+        if (step === 'sign_mode') return this.goto(p, { ...ctx, canSign: true }, 'signer_kind', to, step)
+        break
+      case P.signerHead:
+      case P.signerEmployee:
+        if (step === 'signer_kind') return this.afterSigner(p, { ...ctx, signerKind: payload === P.signerHead ? 'head' : 'employee' }, step, to)
         break
     }
     // Нажата кнопка со старого шага — показываем текущий

@@ -104,6 +104,12 @@ export const membership = pgTable(
     orgId: uuid('org_id').references(() => org.id),
     isAdmin: boolean('is_admin').notNull().default(false),
     canSign: boolean('can_sign').notNull().default(false),
+    /**
+     * Кто подписывает за компанию (HAKATON-49): head — руководитель или ИП, МЧД не нужна;
+     * employee — сотрудник, подписывает только по действующей МЧД (таблица poa); null — ещё не спрашивали.
+     */
+    signerKind: text('signer_kind').$type<'head' | 'employee'>(),
+    /** зеркало текущей МЧД из poa — для экранов, которые показывают только номер и срок */
     poaNumber: text('poa_number'),
     poaValidTo: timestamp('poa_valid_to', { withTimezone: true }),
     /**
@@ -118,6 +124,43 @@ export const membership = pgTable(
     uniqueIndex('membership_person_role_org_uq').on(t.personId, t.role, sql`coalesce(${t.orgId}, '00000000-0000-0000-0000-000000000000'::uuid)`),
     index('membership_org_idx').on(t.orgId),
   ],
+)
+
+/**
+ * Машиночитаемые доверенности подписантов (HAKATON-49). Текущая — без replaced_at; новая заменяет старую,
+ * старая остаётся для истории и для уже подписанных накладных.
+ */
+export const poa = pgTable(
+  'poa',
+  {
+    id: id(),
+    membershipId: uuid('membership_id').notNull().references(() => membership.id),
+    /** единый регистрационный номер (UUID из реестра ФНС) или номер, который ввели руками */
+    number: text('number').notNull(),
+    internalNumber: text('internal_number'),
+    issuedAt: timestamp('issued_at', { withTimezone: true }).notNull(),
+    validTo: timestamp('valid_to', { withTimezone: true }).notNull(),
+    principalInn: text('principal_inn').notNull(),
+    principalName: text('principal_name'),
+    repName: text('rep_name'),
+    repInn: text('rep_inn'),
+    repSnils: text('rep_snils'),
+    /** file — прислали файл МЧД и мы его разобрали; manual — ввели номер и даты руками */
+    source: text('source').$type<'file' | 'manual'>().notNull(),
+    file: bytea('file'),
+    sig: bytea('sig'),
+    /** подпись руководителя под файлом: true — проверена, false — не прошла, null — подписи не прислали */
+    signatureOk: boolean('signature_ok'),
+    signedBy: text('signed_by'),
+    /** что проверили при добавлении — список проверок checkPoa и подписи */
+    checks: jsonb('checks').$type<{ name: string; ok: boolean; level: string; message: string }[]>().notNull().default(sql`'[]'::jsonb`),
+    /** статус в реестре ФНС: unchecked — реестр недоступен или не спрашивали */
+    registryStatus: text('registry_status').$type<'unchecked' | 'active' | 'revoked' | 'not_found' | 'expired'>().notNull().default('unchecked'),
+    registryCheckedAt: timestamp('registry_checked_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    replacedAt: timestamp('replaced_at', { withTimezone: true }),
+  },
+  (t) => [index('poa_membership_idx').on(t.membershipId)],
 )
 
 /** Машины перевозчика: вводятся диспетчером при первом назначении, дальше выбираются кнопкой. */

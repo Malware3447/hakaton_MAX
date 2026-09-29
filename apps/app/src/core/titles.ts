@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import type { Role, TitleKind } from '@nk/domain'
-import { buildT1, buildT2, buildT3, buildT4, splitName, type Party, type PrevTitle, type TitleFile } from '@nk/etrn'
+import { buildT1, buildT2, buildT3, buildT4, splitName, type Party, type PrevTitle, type TitleFile , type TitleSigner } from '@nk/etrn'
 import type { Db } from '../db/client.ts'
+import { PoaService } from './poa.ts'
 import { event, org, participant, person, shipment, signature, title, vehicle } from '../db/schema.ts'
 
 // Титулы перевозки (HAKATON-35): собрать XML из данных перевозки и хранить байты.
@@ -26,7 +27,17 @@ export interface StoredTitle {
 export class TitleError extends Error {}
 
 export class TitleService {
-  constructor(private readonly db: Db) {}
+  private readonly poas: PoaService
+
+  constructor(private readonly db: Db) {
+    this.poas = new PoaService(db)
+  }
+
+  /** Подписант титула: ФИО и полномочия — руководитель сам или сотрудник по МЧД (HAKATON-49). */
+  private async signer(man: { id: string; name: string }, role: Role): Promise<TitleSigner> {
+    const g = await this.poas.gate(man.id, role, null)
+    return { ...splitName(man.name), authority: g.ok ? g.authority : undefined }
+  }
 
   async get(shipmentId: string, kind: TitleKind): Promise<StoredTitle | null> {
     const [t] = await this.db.select().from(title).where(and(eq(title.shipmentId, shipmentId), eq(title.kind, kind)))
@@ -125,7 +136,7 @@ export class TitleService {
         grossKg: s.cargo.grossKg,
         places: s.cargo.places,
       },
-      signer: splitName(shipperMan.name),
+      signer: await this.signer(shipperMan, 'shipper'),
     })
   }
 
@@ -159,7 +170,7 @@ export class TitleService {
       t1,
       uid: s.uid,
       remarks: s.loadingRemarks ? { cargo: s.loadingRemarks } : null,
-      signer: splitName(carrierMan.name),
+      signer: await this.signer(carrierMan, 'carrier'),
     })
   }
 
@@ -185,7 +196,7 @@ export class TitleService {
         a.result === 'refused'
           ? { result: 'refused', reason: a.discrepancies ?? 'Отказ от груза' }
           : { result: a.result, discrepancies: a.discrepancies, arrived, departed, places: s.cargo.places, grossKg: s.cargo.grossKg, unloadingAddress: s.unloadingAddress },
-      signer: splitName(consigneeMan.name),
+      signer: await this.signer(consigneeMan, 'consignee'),
     })
   }
 
@@ -196,7 +207,7 @@ export class TitleService {
     const carrierMan = await this.who(shipmentId, 'carrier')
     const [carrierOrg] = s.carrierOrgId ? await this.db.select().from(org).where(eq(org.id, s.carrierOrgId)) : []
     if (!carrierMan || !carrierOrg) throw new TitleError('нет перевозчика')
-    return buildT4({ createdAt: new Date(), senderId: participantId(carrierOrg.inn), receiverId: OPERATOR_ID, t3, uid: s.uid, signer: splitName(carrierMan.name) })
+    return buildT4({ createdAt: new Date(), senderId: participantId(carrierOrg.inn), receiverId: OPERATOR_ID, t3, uid: s.uid, signer: await this.signer(carrierMan, 'carrier') })
   }
 }
 

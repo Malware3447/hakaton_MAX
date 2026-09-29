@@ -29,7 +29,7 @@ export interface SignatureCheck {
 export interface SignatureVerification {
   ok: boolean
   level: 'unep' | 'ukep' | null
-  signer: { fullName: string | null; inn: string | null; snils: string | null; certificate: string } | null
+  signer: { fullName: string | null; inn: string | null; snils: string | null; personInn?: string | null; certificate: string } | null
   checks: SignatureCheck[]
 }
 

@@ -169,6 +169,8 @@ export class BotStore {
       ogrn: string | null
     } | null
     canSign: boolean
+    /** кто подписывает за компанию: руководитель или ИП — сам, сотрудник — по МЧД (HAKATON-49) */
+    signerKind?: 'head' | 'employee' | null
     poaNumber: string | null
     poaValidTo: Date | null
   }) {
@@ -204,6 +206,7 @@ export class BotStore {
         // Решение 24.09: первый человек организации в роли — администратор, остальные — по приглашению
         isAdmin: orgId !== null,
         canSign: input.canSign,
+        signerKind: input.signerKind ?? null,
         poaNumber: input.poaNumber,
         poaValidTo: input.poaValidTo,
       })

@@ -57,7 +57,7 @@ export interface T1Input {
   cargo: CargoLine[]
   instructions: string
   loading: { address: string; planned: Date; arrived: Date; departed: Date; grossKg: number; places: number }
-  signer: Person
+  signer: TitleSigner
   guid?: string
 }
 
@@ -70,6 +70,29 @@ export interface TitleFile {
 }
 
 const fio = (p: Person) => el('ФИО', { Фамилия: p.surname, Имя: p.name, Отчество: p.patronymic ?? undefined })
+
+/**
+ * Полномочия подписанта (HAKATON-49): руководитель или ИП подписывает сам, сотрудник — по МЧД.
+ * Коды СтатПодп взяты по правилу схемы (при 2 и 5 обязателен СвДовер); расшифровку 1–6
+ * сверить с приказом ФНС о формате ЭТрН.
+ */
+export type SignerAuthority = { kind: 'head' } | { kind: 'poa'; number: string; issuedAt: Date; internalNumber: string | null }
+export const SIGNER_STATUS = { head: '1', poa: '2' } as const
+
+export interface TitleSigner extends Person {
+  authority?: SignerAuthority
+  position?: string | null
+}
+
+function signerEl(s: TitleSigner): Node {
+  const a = s.authority ?? { kind: 'head' as const }
+  return el(
+    'Подписант',
+    { СтатПодп: SIGNER_STATUS[a.kind], Должн: s.position ?? undefined },
+    fio(s),
+    a.kind === 'poa' && el('СвДовер', { ДатаДовер: fmtDate(a.issuedAt), НомерДовер: a.internalNumber ?? undefined, ИдентДовер: a.number }),
+  )
+}
 
 /** ИдСв: ЮЛ — СвЮЛУч, ИП — СвИП с ФИО. */
 function idSv(p: Party): Node {
@@ -146,8 +169,7 @@ export function buildT1(i: T1Input): TitleFile {
         el('ВладИнфр', { СовпГОВ: '1' }),
       ),
     ),
-    // СтатПодп: '1' — статус подписанта; расшифровку сверить с приказом
-    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+    signerEl(i.signer),
   )
   return file('T1', id, doc)
 }
@@ -162,7 +184,7 @@ export interface T2Input {
   uid: string
   /** замечания водителя и перевозчика при приёме груза */
   remarks: { cargo?: string | null; places?: string | null; mass?: string | null } | null
-  signer: Person
+  signer: TitleSigner
   guid?: string
 }
 
@@ -180,7 +202,7 @@ export function buildT2(i: T2Input): TitleFile {
       { УИД_ТрН: i.uid, СодОпер: 'Груз принят к перевозке' },
       hasRemarks ? el('ЗамПрвПрием', { ЗамСостГруз: r!.cargo ?? undefined, ЗамКолМест: r!.places ?? undefined, ЗамМасс: r!.mass ?? undefined }) : null,
     ),
-    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+    signerEl(i.signer),
   )
   return file('T2', id, doc)
 }
@@ -220,7 +242,7 @@ export interface T3Input {
         unloadingAddress: string
       }
     | { result: 'refused'; reason: string }
-  signer: Person
+  signer: TitleSigner
   guid?: string
 }
 
@@ -255,7 +277,7 @@ export function buildT3(i: T3Input): TitleFile {
     { КНД: '1110341', ПоФактХЖ: 'Транспортная накладная', ДатИнфГП: fmtDate(i.createdAt), ВрИнфГП: fmtTime(i.createdAt), НаимЭконСубСост: i.consigneeName },
     el('ИдИнфПрвПрием', { ИдФайлИнфПрвПрием: i.t2.fileId, ДатФайлПрвПрием: fmtDate(i.t2.createdAt), ВрФайлПрвПрием: fmtTime(i.t2.createdAt), ЭП: i.t2.signatureBase64 }),
     content,
-    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+    signerEl(i.signer),
   )
   return file('T3', id, doc)
 }
@@ -267,7 +289,7 @@ export interface T4Input {
   /** Т3, после которого перевозчик закрывает накладную */
   t3: PrevTitle
   uid: string
-  signer: Person
+  signer: TitleSigner
   guid?: string
 }
 
@@ -279,7 +301,7 @@ export function buildT4(i: T4Input): TitleFile {
     { КНД: '1110342', ПоФактХЖ: 'Транспортная накладная', ДатИнфПрвВыд: fmtDate(i.createdAt), ВрИнфПрвВыд: fmtTime(i.createdAt) },
     el('ИдИнфГП', { ИдФайлИнфГП: i.t3.fileId, ДатФайлИнфГП: fmtDate(i.t3.createdAt), ВрФайлИнфГП: fmtTime(i.t3.createdAt), ЭП: i.t3.signatureBase64 }),
     el('СодПрвВыд', { УИД_ТрН: i.uid, СодОпер: 'Груз выдан грузополучателю' }),
-    el('Подписант', { СтатПодп: '1' }, fio(i.signer)),
+    signerEl(i.signer),
   )
   return file('T4', id, doc)
 }

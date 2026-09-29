@@ -199,7 +199,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     expect(buttons(out.last)).toEqual(['+ Отправитель', '+ Перевозчик', '+ Водитель', '+ Получатель', 'Помощь'])
   })
 
-  it('отправитель: ИНН → подтверждение → доверенность позже → учётная система', async () => {
+  it('отправитель: ИНН → подтверждение → «руководитель» без доверенности → учётная система', async () => {
     await act(press(1, 'add:shipper'))
     expect(out.last?.text).toMatch(/ИНН/)
     await act(text(1, '9782242515'))
@@ -207,7 +207,8 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     await act(text(1, '9782242514'))
     expect(out.last?.text).toMatch(/Волжский завод моторных масел/)
     await act(press(1, 'f:yes'))
-    await act(press(1, 'f:later'))
+    expect(out.last?.text).toMatch(/Кто подписывает документы за компанию/)
+    await act(press(1, 'f:signer_head'))
     expect(out.last?.text).toMatch(/учётную систему/)
     await act(press(1, 'f:erp'))
     expect(out.last?.text).toMatch(/Отправитель · ООО «Волжский завод моторных масел»/)
@@ -231,13 +232,24 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
     await act(text(1, 'ООО «Проверка»'))
     await act(text(1, '101000, г. Москва, ул. Тестовая, 1'))
     await act(press(1, 'f:accept_sign'))
+    await act(press(1, 'f:signer_employee'))
+    // роль заведена, и бот сразу просит доверенность сотрудника (HAKATON-49)
+    expect(out.last?.text).toMatch(/Пришлите сюда файл доверенности/)
+    await act(press(1, 'pa:manual'))
     await act(text(1, 'МЧД-1'))
+    expect(out.last?.text).toMatch(/выглядит так/)
+    await act(text(1, '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f'))
     await act(text(1, '01.01.2020'))
+    await act(text(1, '01.06.2020'))
     expect(out.last?.text).toMatch(/истекла/)
+    await act(text(1, '4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F'))
+    await act(text(1, '01.09.2026'))
     await act(text(1, '31.12.2027'))
-    expect(out.last?.text).toMatch(/Получатель · ООО «Проверка»/)
+    expect(out.last?.text).toMatch(/Доверенность принята.*4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f.*31\.12\.2027/s)
+    expect(out.last?.text).toMatch(/введена вручную/)
     await act(press(1, 'company'))
     expect(out.last?.text).toMatch(/не проверены/)
+    expect(out.last?.text).toMatch(/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f/)
   })
 
   it('водитель заводится одним нажатием, все роли остаются', async () => {
@@ -269,7 +281,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(3, 'add:carrier'))
       await act(text(3, '3603931407'))
       await act(press(3, 'f:yes'))
-      await act(press(3, 'f:later'))
+      await act(press(3, 'f:signer_head'))
       expect(out.last?.text).toMatch(/Перевозчик · ООО «ГрузЛайн-Казань»/)
     })
 
@@ -356,7 +368,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Вам предлагают перевезти груз[\s\S]*ОТГ-2026-1044[\s\S]*Пришлите ИНН/)
       await act(text(500, '8390825665'))
       await act(press(500, 'f:yes'))
-      await act(press(500, 'f:later'))
+      await act(press(500, 'f:signer_head'))
       expect(out.last?.text).toMatch(/Вы в перевозке как перевозчик[\s\S]*заявка у перевозчика[\s\S]*Челны-Транс/)
       expect(buttons(out.last)).toContain('Принять заявку')
       const note = out.inbox.get(1)!.at(-1)!.text
@@ -639,7 +651,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(600, 'add:carrier'))
       await act(text(600, '165595589478'))
       await act(press(600, 'f:yes'))
-      await act(press(600, 'f:later'))
+      await act(press(600, 'f:signer_head'))
       await openRef(act, out, '1050')
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 600, first_name: 'Пётр' }))
@@ -1000,7 +1012,11 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(text(902, 'Не хватает 1 бочки 10W-40'))
       expect(buttons(out.last)).toContain('Подписать накладную')
 
+      // Приёмщик пришёл по ссылке: кто он для компании, бот ещё не знает — спрашивает перед подписью (HAKATON-49)
       await act(pressIn(902, `sg:T3:${id}`))
+      expect(out.last?.text).toMatch(/руководитель или сотрудник по доверенности/)
+      expect(out.sentLog.filter((s) => s.userId === 902 && s.m.file?.name.startsWith('ON_TRNACLGRPO_'))).toEqual([])
+      await act(pressIn(902, payloadOf(out.last!, 'Я руководитель или ИП')))
       const t3 = out.sentLog.filter((s) => s.userId === 902 && s.m.file).at(-1)!.m.file!
       expect(t3.name).toMatch(/^ON_TRNACLGRPO_/)
       expect((await validateTitle('T3', t3.bytes)).errors).toEqual([])
