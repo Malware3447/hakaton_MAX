@@ -4,6 +4,7 @@ import { ApiData, ApiError, setRole, startSession, type MeView } from './api.ts'
 import { closeApp, webApp } from './bridge.ts'
 import type { Me, Role } from './model.ts'
 import { Shell, type Route } from './shell.tsx'
+import { BOT_LINK, BOT_NAME } from './texts.ts'
 
 // Мини-приложение в MAX (HAKATON-42): вход по initData, дальше — те же экраны, что в макете,
 // на данных сервера. startapp: r_<роль> — открыть главную этой роли, s_<id> — открыть перевозку.
@@ -66,7 +67,14 @@ export function App() {
         </div>
       )
     case 'outside':
-      return <Message title="Откройте из MAX" text="Мини-приложение работает внутри MAX: откройте его кнопкой в чате с ботом «Накладная в кармане»." />
+      // Вне MAX моста нет: обычная ссылка на чат с ботом, её откроет и браузер
+      return (
+        <Message title="Откройте из MAX" text={`Мини-приложение работает внутри MAX: откройте его кнопкой в чате с ботом «${BOT_NAME.replace(/ /g, '\u00a0')}».`}>
+          <Button asChild size="large" stretched>
+            <a href={BOT_LINK}>Открыть чат с ботом</a>
+          </Button>
+        </Message>
+      )
     case 'unregistered':
     case 'no_roles':
       return (

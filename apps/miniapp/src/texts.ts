@@ -3,6 +3,10 @@ import type { DiscrepancyReason, Ownership, Role, Shipment, SignatureKind, State
 // Тексты экранов. Как и в боте (apps/app/src/bot/cards.ts): без слов «титул», «УИД», «эмулятор».
 // Всё смоделированное помечаем «(модель)».
 
+/** Бот в MAX: так он называется в MAX; ссылка открывает чат с ним и из обычного браузера. */
+export const BOT_NAME = 'Хакатон МАХ 397'
+export const BOT_LINK = 'https://max.ru/t397_hakaton_max_bot'
+
 export const ROLE_TITLE: Record<Role, string> = {
   shipper: 'Отправитель',
   carrier: 'Перевозчик',
