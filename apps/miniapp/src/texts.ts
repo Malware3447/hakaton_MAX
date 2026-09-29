@@ -87,7 +87,7 @@ export const TITLE_TEXT: Record<TitleKind, { name: string; who: string }> = {
 }
 
 export const SIGNATURE_TEXT: Record<SignatureKind, string> = {
-  pep_max: 'простая подпись в MAX',
+  pep_max: 'подтверждение кнопкой в MAX',
   goskey: '«Госключ», проверена',
   demo_ca: 'подпись организации (модель)',
 }

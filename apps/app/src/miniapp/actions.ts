@@ -154,7 +154,7 @@ export class MiniAppActions {
             '',
             esc(text),
             '',
-            `Нажмите «${PEP.load_rm.button}» — это ваша простая подпись: груз принят с этими замечаниями. Отправитель увидит их до своей подписи.`,
+            `Нажмите «${PEP.load_rm.button}» — так вы подтвердите, что приняли груз с этими замечаниями. Отправитель увидит их до своей подписи.`,
           ].join('\n'),
           buttons: [[cb(PEP.load_rm.button, `cl:rm:${shipmentId}`)], [cb('Назад к перевозке', S.view(shipmentId))]],
         })
@@ -261,7 +261,7 @@ export class MiniAppActions {
       await this.db.update(org).set({ ...(name ? { name } : {}), ...(address ? { address } : {}) }).where(eq(org.id, row.o.id))
     }
     // МЧД и «кто подписывает» — своё у каждого подписанта (HAKATON-49); проверки те же, что в боте
-    if ((patch.signerKind || patch.poa) && scope.role === 'driver') return fail(400, 'invalid_payload', 'Водитель подтверждает приём и сдачу груза своей подписью — доверенность не нужна')
+    if ((patch.signerKind || patch.poa) && scope.role === 'driver') return fail(400, 'invalid_payload', 'Водитель только подтверждает приём и сдачу груза — доверенность не нужна')
     const poas = new PoaService(this.db, { pki: null, registry: this.poaRegistry })
     if (patch.signerKind) await poas.setSignerKind(row.m.id, patch.signerKind)
     if (patch.poa) {

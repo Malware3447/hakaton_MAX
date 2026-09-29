@@ -464,7 +464,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.last?.text).toMatch(/Не получилось подтвердить номер/)
       await act(ownPhone(4, '79170001122'))
       expect(out.last?.text).toMatch(/груз у водителя, нужна подпись отправителя/)
-      expect(out.last?.text).toMatch(/✅ Приём груза подтверждён вашей подписью/)
+      expect(out.last?.text).toMatch(/✅ Вы подтвердили приём груза/)
       expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Водитель принял груз без замечаний\. Подпишите накладную/)
       expect(buttons(await openLast(1))).toContain('Подписать накладную')
     })
