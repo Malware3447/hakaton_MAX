@@ -835,9 +835,20 @@
   background: var(--background-primary);
   box-shadow: 0 -1px 0 var(--background-tertiary);
 }
+/* Кнопки в строку: каждая не уже своей подписи, свободное место — в основном главной (она последняя).
+   Раньше растянутая главная (width: 100%) сжимала соседнюю, и подпись обрезалась: «Отк…», «Есть з…» на 390 px.
+   Не помещаются обе — главная переносится на новую строку, и каждая кнопка во всю ширину */
 .foot-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+.foot-row > button {
+  flex: 1 1 auto;
+}
+.foot-row > button:last-child {
+  flex-grow: 3;
+  width: auto;
 }
 .result {
   font-weight: 600;
