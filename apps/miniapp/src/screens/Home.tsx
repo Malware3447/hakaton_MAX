@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Button, CellList, CellSimple, Counter, IconButton, Input, Typography } from '@maxhub/max-ui'
-import type { DateFilter, ListQuery, OrgBrief, Role, Shipment, StatusFilter } from '../model.ts'
+import type { DateFilter, ListQuery, OrgBrief, PoaAlert, Role, Shipment, StatusFilter } from '../model.ts'
 import { Loading, useApp, useLoad } from '../shell.tsx'
-import { Chip, Empty, Sheet, Tabs } from '../ui/kit.tsx'
-import { IconBell, IconBuilding, IconCheck, IconFilter, IconSearch, IconTruck } from '../ui/icons.tsx'
+import { Chip, Empty, Note, Sheet, Tabs } from '../ui/kit.tsx'
+import { IconAlert, IconBell, IconBuilding, IconCheck, IconFilter, IconSearch, IconTruck } from '../ui/icons.tsx'
 import { fmtAgo, fmtDay, hasDiscrepancy, plural, route, STATE_SHORT, STATUS_FILTER_TEXT, TODO } from '../texts.ts'
 
 // Главная роли: вкладки «Ждут меня / В работе / Закрытые», поиск, фильтры отправителя.
@@ -99,6 +99,8 @@ export function Home() {
         </div>
       </header>
 
+      {current.poaAlert && <PoaBanner alert={current.poaAlert} onOpen={() => go({ name: 'company' })} />}
+
       <div className="home-sticky">
         <Tabs
           items={(['waiting', 'active', 'done'] as const).map((k) => ({ key: k, label: TAB_LABEL[role][k], count: list?.counts[k], attention: k === 'waiting' }))}
@@ -172,7 +174,7 @@ export function Home() {
             <CellSimple
               key={r.role}
               title={r.title}
-              subtitle={r.orgName ?? undefined}
+              subtitle={[r.orgName, r.poaAlert && POA_SHORT[r.poaAlert.kind]].filter(Boolean).join(' · ') || undefined}
               before={<span className="radio-dot" data-on={r.role === role} />}
               after={r.waiting > 0 ? <Counter value={r.waiting} variant={r.role === role ? 'primary' : 'attention'} /> : undefined}
               onClick={() => void switchRole(r.role)}
@@ -276,5 +278,34 @@ function FilterSheet(props: { open: boolean; onClose: () => void; value: typeof 
         Фильтр запоминается на этом устройстве. {n ? `Выбрано: ${n} ${plural(n, 'условие', 'условия', 'условий')}.` : ''}
       </Typography.Body>
     </Sheet>
+  )
+}
+
+const POA_SHORT: Record<PoaAlert['kind'], string> = {
+  missing: 'нет доверенности',
+  expiring: 'доверенность истекает',
+  expired: 'доверенность истекла',
+}
+
+/** Напоминание о доверенности сотрудника (HAKATON-49): без действующей МЧД подписать за компанию нельзя. */
+function PoaBanner({ alert, onOpen }: { alert: PoaAlert; onOpen: () => void }) {
+  const until = alert.validTo ? new Date(alert.validTo).toLocaleDateString('ru-RU') : null
+  const text =
+    alert.kind === 'expired'
+      ? `Доверенность закончилась${until ? ` ${until}` : ''} — подписывать накладные за компанию нельзя.`
+      : alert.kind === 'expiring'
+        ? alert.daysLeft === 0
+          ? 'Доверенность действует последний день — завтра подписать за компанию уже не получится.'
+          : `Доверенность истекает через ${alert.daysLeft} ${plural(alert.daysLeft ?? 0, 'день', 'дня', 'дней')}${until ? `, ${until}` : ''}. Продлите заранее, чтобы подписи не встали.`
+        : 'Вы подписываете как сотрудник, а доверенности нет — без неё подписать за компанию нельзя.'
+  return (
+    <div className="poa-banner">
+      <Note tone={alert.kind === 'expiring' ? 'warn' : 'bad'} icon={<IconAlert size={18} />}>
+        <span>{text}</span>
+        <Button size="small" variant="secondary" onClick={onOpen}>
+          {alert.kind === 'missing' ? 'Добавить доверенность' : 'Продлить доверенность'}
+        </Button>
+      </Note>
+    </div>
   )
 }

@@ -264,6 +264,18 @@ describe.skipIf(!url)('мини-приложение: у каждой роли �
     expect(co).toMatchObject({ signerKind: 'employee', poa: { number: '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', source: 'manual', signatureOk: null } })
     expect(co.poa.issuedAt.slice(0, 10)).toBe('2026-09-01')
 
+    // напоминание на главной (/api/me): доверенность на много лет вперёд — молчим
+    const alertOf = async (who: number, role: Role) => ((await get(who, '/me')).json().roles as { role: Role; poaAlert?: unknown }[]).find((r) => r.role === role)?.poaAlert ?? null
+    expect(await alertOf(P.marina, 'shipper')).toBeNull()
+    const soon = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10)
+    await put(P.marina, '/company?role=shipper', { poa: { number: '5f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', issuedAt: '2026-09-01', validTo: soon } })
+    expect(await alertOf(P.marina, 'shipper')).toMatchObject({ kind: 'expiring', daysLeft: 5 })
+    // сотрудник без доверенности — напоминание «нет»; руководителю — ничего
+    await put(P.oleg, '/company?role=carrier', { signerKind: 'employee' })
+    expect(await alertOf(P.oleg, 'carrier')).toMatchObject({ kind: 'missing' })
+    await put(P.oleg, '/company?role=carrier', { signerKind: 'head' })
+    expect(await alertOf(P.oleg, 'carrier')).toBeNull()
+
     // у Ларисы в другой компании доверенности нет — своя у каждого
     expect((await get(P.larisa, '/company?role=shipper')).json().poa).toBeNull()
     expect((await put(P.ivan, '/company?role=driver', { signerKind: 'employee' })).statusCode).toBe(400)

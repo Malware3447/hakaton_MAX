@@ -6,7 +6,10 @@ import { ROLE_TITLE } from '../bot/screens.ts'
 import { BotStore } from '../bot/store.ts'
 import { isParticipant, scopeOf, visibleTo, type Scope } from './access.ts'
 import { HIDDEN_EVENTS, eventActor, eventText, eventTurn, referencedIds, type EventNames } from './feed.ts'
-import type { Company, Driver, FileLink, LineCheck, Me, Notice, OrgBrief, ShipEvent, Shipment, TitleView, Vehicle } from './view.ts'
+import type { Company, Driver, FileLink, LineCheck, Me, Notice, OrgBrief, PoaAlert, ShipEvent, Shipment, TitleView, Vehicle } from './view.ts'
+
+/** За сколько дней до конца доверенности напоминать */
+const POA_WARN_DAYS = 14
 
 // Чтение для экранов мини-приложения (HAKATON-42): списки, карточка, лента, раздел событий,
 // машины и водители, компания. Всё — в пределах роли человека и его организации (access.ts).
@@ -48,10 +51,32 @@ export class MiniAppReader {
     const roles = []
     for (const r of await this.store.roles(personId)) {
       const scope = await scopeOf(this.db, personId, r.role)
-      roles.push({ role: r.role, title: ROLE_TITLE[r.role], orgName: r.org?.name ?? null, waiting: scope ? await this.waitingCount(scope) : 0 })
+      roles.push({ role: r.role, title: ROLE_TITLE[r.role], orgName: r.org?.name ?? null, waiting: scope ? await this.waitingCount(scope) : 0, poaAlert: await this.poaAlert(personId, r.role) })
     }
     const activeRole = roles.find((r) => r.role === p.activeRole)?.role ?? roles[0]?.role ?? null
     return { name: p.name, activeRole, roles }
+  }
+
+  /**
+   * Напоминание о доверенности (HAKATON-49): только сотруднику, который подписывает за компанию по МЧД.
+   * Руководителю, ИП и водителю доверенность не нужна — им ничего не показываем.
+   */
+  private async poaAlert(personId: string, role: Role, now = new Date()): Promise<PoaAlert | null> {
+    if (role === 'driver') return null
+    const [m] = await this.db
+      .select()
+      .from(membership)
+      .where(and(eq(membership.personId, personId), eq(membership.role, role), isNotNull(membership.orgId)))
+      .orderBy(membership.createdAt)
+      .limit(1)
+    if (!m || m.signerKind !== 'employee') return null
+    const current = await this.poaOf(m)
+    if (!current || current.source === 'legacy') return { kind: 'missing', daysLeft: null, validTo: current?.validTo ?? null }
+    const day = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    const daysLeft = Math.round((day(new Date(current.validTo)) - day(now)) / 86_400_000)
+    if (daysLeft < 0) return { kind: 'expired', daysLeft, validTo: current.validTo }
+    if (daysLeft <= POA_WARN_DAYS) return { kind: 'expiring', daysLeft, validTo: current.validTo }
+    return null
   }
 
   private async waitingCount(scope: Scope): Promise<number> {

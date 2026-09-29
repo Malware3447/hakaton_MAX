@@ -171,6 +171,15 @@ export interface RoleSummary {
   title: string
   orgName: string | null
   waiting: number
+  /** напоминание о доверенности сотрудника (HAKATON-49): нет, истекает через 14 дней и меньше, истекла */
+  poaAlert?: PoaAlert | null
+}
+
+export interface PoaAlert {
+  kind: 'missing' | 'expiring' | 'expired'
+  /** сколько дней осталось; у «истекла» — 0 и меньше */
+  daysLeft: number | null
+  validTo: string | null
 }
 
 export interface Me {

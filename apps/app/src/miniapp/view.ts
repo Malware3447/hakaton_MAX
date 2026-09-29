@@ -15,6 +15,7 @@ export type {
   Me,
   Notice,
   OrgBrief,
+  PoaAlert,
   RoleSummary,
   ShipEvent,
   Shipment,

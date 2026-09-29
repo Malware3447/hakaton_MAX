@@ -10,6 +10,7 @@ import type {
   Notice,
   OrgBrief,
   Ownership,
+  PoaAlert,
   Role,
   ShipEvent,
   Shipment,
@@ -252,6 +253,7 @@ export class MockData implements DataSource {
         title: ROLE_TITLE[role],
         orgName: role === 'driver' ? SEED.carriers[0]!.name : this.w.companies[role].name,
         waiting: this.visible(role).filter((s) => s.turn === role && this.isMine(s, role)).length,
+        poaAlert: poaAlertOf(this.w.companies[role]),
       })),
     }
   }
@@ -618,4 +620,13 @@ function companies(): Record<Role, Company> {
       ],
     },
   }
+}
+
+/** То же правило, что на сервере (miniapp/reader.ts → poaAlert): только сотруднику по МЧД, за 14 дней. */
+function poaAlertOf(c: Company): PoaAlert | null {
+  if (c.role === 'driver' || c.signerKind !== 'employee') return null
+  if (!c.poa || c.poa.source === 'legacy') return { kind: 'missing', daysLeft: null, validTo: c.poa?.validTo ?? null }
+  const daysLeft = Math.round((startOfDay(new Date(c.poa.validTo)).getTime() - startOfDay(new Date()).getTime()) / DAY)
+  if (daysLeft < 0) return { kind: 'expired', daysLeft, validTo: c.poa.validTo }
+  return daysLeft <= 14 ? { kind: 'expiring', daysLeft, validTo: c.poa.validTo } : null
 }
