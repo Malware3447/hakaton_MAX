@@ -750,7 +750,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       const toDriver = out.inbox.get(800)!.at(-1)!
       // ссылка текстом, без кнопки: по кнопке её легко открыть самому (решение 29.09)
       expect(toDriver.text).toMatch(/Ссылка для приёмщика ООО «Волга»[\s\S]*Сами не открывайте[\s\S]*start=inv_/)
-      expect(toDriver.buttons ?? []).toEqual([])
+      // ответа не ждём — только «В меню» (решение 29.09)
+      expect(buttons(toDriver)).toEqual(['В меню'])
+      expect(buttons(toShipper)).toEqual(['В меню'])
       expect(tokenIn(toDriver)).toBe(tokenIn(toShipper))
 
       const token = tokenIn(toShipper)
@@ -1000,6 +1002,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(toDriver.some((m) => /Накладная зарегистрирована в ГИС ЭПД \(модель\), можно ехать/.test(m.text) && buttons(m).includes('Открыть'))).toBe(true)
       const qr = toDriver.find((m) => m.file)!
       expect(qr.file!.name).toBe('QR-ОТГ-2026-1057.gif')
+      expect(buttons(qr)).toEqual(['В меню']) // ответа не ждём — кнопка после файла
       const gif = Buffer.from(qr.file!.bytes)
       expect(gif.subarray(0, 6).toString()).toBe('GIF89a')
       expect(gif.includes('NETSCAPE2.0')).toBe(true) // зацикленная анимация

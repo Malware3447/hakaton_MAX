@@ -335,7 +335,7 @@ export class TripFlows {
         await this.messenger
           .send(knownMaxUserId, {
             text: `🚚 ${esc(view?.carrier?.name ?? 'Перевозчик')} назначает вас водителем на рейс ${esc(view?.erpRef ?? '')}. Откройте, чтобы принять:`,
-            buttons: [[{ text: 'Открыть рейс', kind: 'link', payload: link }]],
+            buttons: [[{ text: 'Открыть рейс', kind: 'link', payload: link }], [cb('В меню', 'root')]],
           })
           .catch((err) => this.log.warn({ err }, 'не удалось отправить приглашение водителю'))
         note = `${esc(inviteeName)} получил приглашение в боте.`

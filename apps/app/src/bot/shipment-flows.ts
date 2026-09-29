@@ -137,7 +137,7 @@ export class ShipmentFlows {
         }
         await this.ui.reply(to, {
           text: `Новая ссылка для роли «${ROLE_TITLE[role].toLowerCase()}». Перешлите её человеку, она действует 7 дней:\n${inviteLink(this.botUsername, token)}`,
-          buttons: [[cb('Открыть перевозку', S.view(id))]],
+          buttons: [[cb('Открыть перевозку', S.view(id))], [cb('В меню', `open:${role === 'driver' ? 'carrier' : 'shipper'}`)]],
         })
         return true
       }
@@ -381,6 +381,8 @@ export class ShipmentFlows {
         {
           text: `QR-код накладной ${esc(view.erpRef)}. Покажите его на проверке на дороге — файл открывается без сети. <i>Модель ГИС ЭПД.</i>`,
           file,
+          // ответа не ждём: кнопка после файла, чтобы было куда идти дальше (решение 29.09)
+          buttons: [[cb('В меню', 'open:driver')]],
         },
         { shipmentId },
       )
@@ -422,6 +424,7 @@ export class ShipmentFlows {
       await this.messenger
         .send(shipper.maxUserId, {
           text: `🚚 Машина по перевозке ${esc(view.erpRef)} выехала. Перешлите приглашение приёмщику ${esc(view.consignee.name)} — по нему он примет груз и подпишет накладную без кабинета и своего ЭДО. Сами не открывайте: ссылка для получателя.\n${link}`,
+          buttons: [[cb('В меню', 'open:shipper')]],
         }, { shipmentId })
         .catch((err) => this.log.warn({ err }, 'не удалось написать отправителю'))
     }
@@ -429,6 +432,7 @@ export class ShipmentFlows {
       await this.messenger
         .send(driver.maxUserId, {
           text: `Ссылка для приёмщика ${esc(view.consignee.name)}: если на складе его ещё нет в боте, покажите или перешлите ему. Сами не открывайте.\n${link}`,
+          buttons: [[cb('В меню', 'open:driver')]],
         }, { shipmentId })
         .catch((err) => this.log.warn({ err }, 'не удалось написать водителю'))
     }

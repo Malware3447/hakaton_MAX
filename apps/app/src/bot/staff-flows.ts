@@ -125,7 +125,7 @@ export class StaffFlows {
         `Ссылка для сотрудника ${esc(r.org.name)} в роли «${role(r.role)}». Перешлите её человеку — войдёт один, ссылка действует 7 дней:`,
         orgInviteLink(this.botUsername, token),
       ].join('\n'),
-      buttons: [[cb('К компании', P.company)]],
+      buttons: [[cb('К компании', P.company)], [cb('В меню', P.open(r.role))]],
     })
   }
 
@@ -149,7 +149,7 @@ export class StaffFlows {
       const token = await this.invites.create(orgId, r, p.id, info.user_id)
       await this.ui.reply(to, {
         text: [`${esc(name)} ещё не пользуется ботом. Перешлите ему приглашение — оно действует 7 дней:`, orgInviteLink(this.botUsername, token)].join('\n'),
-        buttons: [[cb('К компании', P.company)]],
+        buttons: [[cb('К компании', P.company)], [cb('В меню', P.open(r))]],
       })
       return true
     }
