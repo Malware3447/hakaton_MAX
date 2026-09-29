@@ -31,7 +31,7 @@ export function instruction(v: ShipmentView, reason?: string | null): string | n
         ? `${why}Подпишите накладную ещё раз.`
         : 'Отправитель подписал накладную. Подпишите её со своей стороны — после этого водитель получит QR-код.'
     case 'in_transit':
-      return 'Накладная зарегистрирована, можно ехать. QR-код для проверки на дороге пришёл файлом. На месте нажмите «Я на выгрузке».'
+      return 'Накладная зарегистрирована в ГИС ЭПД (модель), можно ехать. QR-код для проверки на дороге пришёл файлом. На месте нажмите «Я на выгрузке».'
     case 'unloading':
       return 'Когда груз выгружен и передан получателю, нажмите «Груз сдан».'
     case 'receiving':
@@ -64,9 +64,9 @@ export function eventFor(v: ShipmentView, from: State): { roles: Role[]; text: s
     case 't1_signed':
       return from === 'loaded' ? { roles: ['driver'], text: 'Отправитель подписал накладную. Ждём подписи перевозчика.' } : null
     case 'registering':
-      return { roles: ['shipper', 'driver'], text: 'Перевозчик подписал накладную. Ждём регистрации в ГИС ЭПД.' }
+      return { roles: ['shipper', 'driver'], text: 'Перевозчик подписал накладную. Ждём регистрации в ГИС ЭПД (модель).' }
     case 'in_transit':
-      return { roles: ['shipper', 'carrier', 'consignee'], text: 'Накладная зарегистрирована в ГИС ЭПД, машина в пути.' }
+      return { roles: ['shipper', 'carrier', 'consignee'], text: 'Накладная зарегистрирована в ГИС ЭПД (модель), машина в пути.' }
     case 'unloading':
       return { roles: ['shipper', 'consignee'], text: 'Машина на выгрузке.' }
     case 'receiving':
@@ -89,7 +89,7 @@ export const DONE: Partial<Record<CommandType, string>> = {
   'driver.arrivedLoading': '✅ Отметили прибытие на погрузку.',
   'driver.confirmLoading': '✅ Приём груза подтверждён вашей подписью.',
   'shipper.signT1': '✅ Накладная подписана.',
-  'carrier.signT2': '✅ Накладная подписана. Ждём регистрации в ГИС ЭПД — водитель получит QR-код.',
+  'carrier.signT2': '✅ Накладная подписана. Ждём регистрации в ГИС ЭПД (модель) — водитель получит QR-код.',
   'driver.arrivedUnloading': '✅ Отметили прибытие на выгрузку.',
   'driver.confirmDelivered': '✅ Сдача груза подтверждена вашей подписью.',
   'consignee.recordAcceptance': '✅ Приёмка отмечена вашей подписью.',

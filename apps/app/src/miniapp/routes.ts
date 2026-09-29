@@ -222,7 +222,7 @@ export function registerMiniAppApi(app: FastifyInstance, deps: MiniAppDeps) {
     const act = actions()
     if (!act) return reply.code(503).send(NO_BOT)
     const gif = await act.qr(scope, (req.params as { id: string }).id)
-    if (!gif) return reply.code(404).send({ error: 'not_found', message: 'QR-кода пока нет: он появится после регистрации накладной' })
+    if (!gif) return reply.code(404).send({ error: 'not_found', message: 'QR-кода пока нет: он появится после регистрации накладной в ГИС ЭПД (модель)' })
     return reply.header('content-type', 'image/gif').header('cache-control', 'no-store').send(Buffer.from(gif))
   })
 

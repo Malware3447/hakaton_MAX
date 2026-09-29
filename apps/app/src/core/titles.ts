@@ -147,7 +147,7 @@ export class TitleService {
   private async buildT2(shipmentId: string): Promise<TitleFile> {
     const [s] = await this.db.select().from(shipment).where(eq(shipment.id, shipmentId))
     if (!s) throw new TitleError('перевозка не найдена')
-    if (!s.uid) throw new TitleError('оператор ещё не выдал номер накладной')
+    if (!s.uid) throw new TitleError('оператор ЭПД ещё не выдал номер накладной (модель)')
     const t1 = await this.prev(shipmentId, 'T1', 'shipper', 'первый титул')
     const carrierMan = await this.who(shipmentId, 'carrier')
     const [carrierOrg] = s.carrierOrgId ? await this.db.select().from(org).where(eq(org.id, s.carrierOrgId)) : []

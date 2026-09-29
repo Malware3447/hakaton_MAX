@@ -909,7 +909,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
 
     it('перевозчик: без номера накладной от оператора Т2 не собрать; оператор выдал — XML Т2 по схеме, демо-подпись', async () => {
       await act(press(3, `sg:T2:${id}`))
-      expect(out.last?.text).toMatch(/оператор ещё не выдал номер накладной/)
+      expect(out.last?.text).toMatch(/оператор ЭПД ещё не выдал номер накладной \(модель\)/)
       // Оператор недоступен минуту: титул примется, когда он «вернётся», без перезапуска
       await epd.setUnavailable(60)
       await operator.submit(id, 'T1')
@@ -928,7 +928,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       // В Т2 — подпись Т1 целиком (тот .sig, что прислал отправитель)
       expect(decode1251(t2.bytes)).toContain(`ЭП="${Buffer.from([1, 2, 3]).toString('base64')}"`)
       await act(press(3, `sgd:T2:${id}`))
-      expect(out.last?.text).toMatch(/регистрируется в ГИС ЭПД/)
+      expect(out.last?.text).toMatch(/регистрируется в ГИС ЭПД \(модель\)/)
+      expect(out.last?.text).toMatch(/Ждём регистрации в ГИС ЭПД \(модель\) — водитель получит QR-код/)
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Перевозчик подписал накладную\. Ждём регистрации в ГИС ЭПД \(модель\)\./)
     })
 
     it('оператор отклонил Т2, потом ошибка ГИС: перевозчик видит причину и подписывает заново', async () => {
@@ -963,6 +965,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await drain()
       const [s] = await conn.db.select().from(shipment).where(eq(shipment.id, id))
       expect(s!.state).toBe('in_transit')
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Накладная зарегистрирована в ГИС ЭПД \(модель\), машина в пути/)
 
       // QR — последствие sendQrToDriver; с ручкой задержки оператор отвечает «не готов», повтор отложенным шагом
       await operator.deliverQr(id)
@@ -970,7 +973,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       expect(out.inbox.get(801)!.slice(before).some((m) => m.file)).toBe(false)
       await drain()
       const toDriver = out.inbox.get(801)!.slice(before)
-      expect(toDriver.some((m) => /Накладная зарегистрирована, можно ехать/.test(m.text) && buttons(m).includes('Открыть'))).toBe(true)
+      expect(toDriver.some((m) => /Накладная зарегистрирована в ГИС ЭПД \(модель\), можно ехать/.test(m.text) && buttons(m).includes('Открыть'))).toBe(true)
       const qr = toDriver.find((m) => m.file)!
       expect(qr.file!.name).toBe('QR-ОТГ-2026-1057.gif')
       const gif = Buffer.from(qr.file!.bytes)
