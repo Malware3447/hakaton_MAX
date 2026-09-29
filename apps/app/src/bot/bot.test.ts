@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MockDirectory } from '../adapters/mock-directory.ts'
@@ -21,7 +21,7 @@ import { InviteService } from '../core/invite-service.ts'
 import { FleetService } from '../core/fleet.ts'
 import { CardStore } from './card-store.ts'
 import { TitleService } from '../core/titles.ts'
-import { MockEpd } from '../adapters/mock-epd.ts'
+import { DEFAULT_FAULTS, MockEpd } from '../adapters/mock-epd.ts'
 import { OperatorLink, type OperatorTask } from '../core/operator-link.ts'
 import { SignatureService, type SignatureVerification } from '../core/signatures.ts'
 import { DemoCaSigner } from '../core/demo-signer.ts'
@@ -1223,6 +1223,120 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(1, 'pa'))
       await act(contact(1, { user_id: 7700, first_name: 'Ольга' }))
       expect(out.last?.text).toMatch(/Человек 7700 уже в компании/)
+    })
+  })
+
+  describe('повторная подпись того же титула (находка 29.09)', () => {
+    // Вторая подпись титула той же стороной ломала сцепку: следующий титул брал последнюю подпись,
+    // а оператору уже ушла первая — модель оператора отклоняла Т2, перевозка навсегда «регистрируется»
+    const shipmentOf = async (ref: string) => (await conn.db.select().from(shipment).where(eq(shipment.erpRef, ref)))[0]!.id
+    const stateOf = async (id: string) => (await conn.db.select().from(shipment).where(eq(shipment.id, id)))[0]!.state
+    /** Подписи стороны под титулом (без простых подписей водителя и получателя). */
+    const sigsOf = async (id: string, kind: 'T1' | 'T2', role: 'shipper' | 'carrier') =>
+      conn.db.select().from(signature).where(and(eq(signature.shipmentId, id), eq(signature.titleKind, kind), eq(signature.role, role)))
+    const pending: [OperatorTask, string, string | undefined][] = []
+    const delays: number[] = []
+    let clock = new Date('2026-09-29T10:00:00Z')
+    let epd: MockEpd
+    let operator: OperatorLink
+    const drain = async () => {
+      for (let n = 0; pending.length; n++) {
+        if (n > 50) throw new Error('отложенные шаги не кончаются')
+        const [task, sid, arg] = pending.shift()!
+        clock = new Date(clock.getTime() + delays.shift()! * 1000)
+        await operator.run(task, sid, arg)
+      }
+    }
+    beforeAll(async () => {
+      epd = new MockEpd(conn.db, () => clock)
+      await epd.setFaults(DEFAULT_FAULTS)
+      operator = new OperatorLink(conn.db, epd, svc, new TitleService(conn.db), {
+        onTransition: (res, reason) => bot.afterSystemTransition(res, reason),
+        later: async (task, sid, delay, arg) => {
+          pending.push([task, sid, arg])
+          delays.push(delay)
+        },
+        sendQr: (sid, file) => bot.sendQrToDriver(sid, file),
+      })
+    })
+    let id = ''
+
+    it('отправитель жмёт «Демо-подпись» ещё раз после отправки оператору — подпись одна, ответ «Уже подписано»', async () => {
+      // ОТГ-1045: водитель 600 принял груз с замечаниями, ход отправителя
+      id = await shipmentOf('ОТГ-2026-1045')
+      expect(await stateOf(id)).toBe('loaded')
+      await act(pressIn(1, `sgd:T1:${id}`))
+      expect(out.last?.text).toMatch(/Демо-подпись принята/)
+      // Т1 с подписью уходит оператору (в работе — очередь по submitTitle), в ответ — номер накладной
+      await operator.submit(id, 'T1')
+      await drain()
+
+      await act(pressIn(1, `sgd:T1:${id}`))
+      expect(out.lastNotification).toBe('Уже подписано')
+      expect(await sigsOf(id, 'T1', 'shipper')).toHaveLength(1)
+      expect(await stateOf(id)).toBe('t1_signed')
+    })
+
+    it('перевозчик жмёт «Демо-подпись» дважды одновременно — подпись одна, накладная регистрируется', async () => {
+      await Promise.all([act(pressIn(3, `sgd:T2:${id}`, 'sign-a')), act(pressIn(3, `sgd:T2:${id}`, 'sign-b'))])
+      expect(await sigsOf(id, 'T2', 'carrier')).toHaveLength(1)
+      expect(await stateOf(id)).toBe('registering')
+
+      await operator.submit(id, 'T2')
+      await drain()
+      expect(await stateOf(id)).toBe('in_transit')
+      const errors = (await conn.db.select().from(event).where(eq(event.shipmentId, id))).filter((e) => e.type === 'operator.error')
+      expect(errors).toEqual([])
+      // в Т2 — та самая подпись Т1, что ушла оператору
+      const [t1sig] = await sigsOf(id, 'T1', 'shipper')
+      const t2 = (await new TitleService(conn.db).get(id, 'T2'))!
+      expect(decode1251(t2.bytes)).toContain(`ЭП="${Buffer.from(t1sig!.cms!).toString('base64')}"`)
+      // позже — снова старая кнопка: уже подписано, перевозка в пути
+      await act(pressIn(3, `sgd:T2:${id}`))
+      expect(out.lastNotification).toBe('Уже подписано')
+      expect(await sigsOf(id, 'T2', 'carrier')).toHaveLength(1)
+    })
+
+    it('«Госключ»: ответ переслали дважды одновременно — подпись одна; прислали снова позже — «Уже подписано»', async () => {
+      // ОТГ-1044: перевозчик 500 сам за рулём, рейс принят; погрузку отмечаем прямо через ядро
+      const id2 = await shipmentOf('ОТГ-2026-1044')
+      const [driver] = await conn.db.select().from(person).where(eq(person.maxUserId, 500))
+      const asDriver = { kind: 'person' as const, personId: driver!.id, role: 'driver' as const }
+      const evidence = { maxUserId: 500, phoneSha256: 'ab'.repeat(32), callbackId: 'c', messageMid: 'm', buttonText: 'тест', at: new Date().toISOString() }
+      expect((await svc.execute({ type: 'driver.arrivedLoading', shipmentId: id2, payload: {} }, asDriver)).ok).toBe(true)
+      expect((await svc.execute({ type: 'driver.confirmLoading', shipmentId: id2, payload: { remarks: null, evidence } }, asDriver)).ok).toBe(true)
+
+      await act(pressIn(1, `sg:T1:${id2}`))
+      expect(out.last?.text).toMatch(/Подпишите накладную ОТГ-2026-1044/)
+      verifier.next = { ok: true, level: 'ukep', signer: { fullName: 'Соколова Марина', inn: '9782242514', snils: null, certificate: 'MII' }, checks: [{ name: 'signature', ok: true, message: '' }] }
+      vi.stubGlobal('fetch', async () => new Response(new Uint8Array([4, 5, 6])))
+      try {
+        await Promise.all([act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig-1', true)), act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig-2', true))])
+        expect(await sigsOf(id2, 'T1', 'shipper')).toHaveLength(1)
+        expect(await stateOf(id2)).toBe('t1_signed')
+
+        // Снова «Подписать накладную» со старой карточки и тот же ответ «Госключа»
+        await act(pressIn(1, `sg:T1:${id2}`))
+        await act(fileMsg(1, 'doc.xml.sig', 'https://files.test/sig-1', true))
+        expect(out.last?.text).toMatch(/Уже подписано/)
+        expect(await sigsOf(id2, 'T1', 'shipper')).toHaveLength(1)
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('две записи одной подписи одновременно в обход бота — одна строка, обе вернули её id', async () => {
+      // ОТГ-1044 ждёт подписи перевозчика; номер накладной для Т2 — от модели оператора
+      const id2 = await shipmentOf('ОТГ-2026-1044')
+      await operator.submit(id2, 'T1')
+      await drain()
+      const t2 = await new TitleService(conn.db).ensure(id2, 'T2')
+      const [carrier] = await conn.db.select().from(person).where(eq(person.maxUserId, 500))
+      const input = { shipmentId: id2, titleId: t2.id, titleKind: 'T2' as const, role: 'carrier' as const, kind: 'demo_ca' as const, personId: carrier!.id, cms: new Uint8Array([7, 7, 7]), signerName: null, signerSnils: null, verified: true, verifyResult: 'тест' }
+      const signatures = new SignatureService(conn.db)
+      const [a, b] = await Promise.all([signatures.record(input), signatures.record(input)])
+      expect(a).toBe(b)
+      expect(await sigsOf(id2, 'T2', 'carrier')).toHaveLength(1)
     })
   })
 })

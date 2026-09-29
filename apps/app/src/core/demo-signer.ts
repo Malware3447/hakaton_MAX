@@ -30,7 +30,10 @@ export class DemoCaSigner implements SignatureProvider {
     return { titleId: t.id, kind: this.kind, userAction: 'none' }
   }
 
-  /** Подписать титул от имени организации стороны role, проверить и записать. cms не нужен: подписываем сами. */
+  /**
+   * Подписать титул от имени организации стороны role, проверить и записать. cms не нужен: подписываем сами.
+   * Запись — SignatureService.record: повтор вернёт уже записанную подпись или бросит SignatureNotAwaited.
+   */
   async accept(titleId: string, signerPersonId: string, role: Role): Promise<SignatureRecord> {
     const [t] = await this.db.select().from(title).where(eq(title.id, titleId))
     if (!t) throw new DemoSignError('титул не найден')

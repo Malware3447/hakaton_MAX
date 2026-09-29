@@ -2,7 +2,7 @@ import type { Command, Messenger, Role, SignatureProvider, TitleKind } from '@nk
 import type { FastifyBaseLogger } from 'fastify'
 import { DemoSignError } from '../core/demo-signer.ts'
 import type { ShipmentService } from '../core/shipments.ts'
-import type { SignatureService, SignatureVerifier } from '../core/signatures.ts'
+import { SignatureNotAwaited, type SignatureService, type SignatureVerifier } from '../core/signatures.ts'
 import { TitleError, type TitleService } from '../core/titles.ts'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment } from '../max/types.ts'
@@ -25,6 +25,9 @@ export const SIGN: Partial<Record<TitleKind, { role: Role; command: Command['typ
 }
 
 const GOSKEY_BOT = 'https://max.ru/goskey_bot'
+
+/** Подпись не записана (SignatureNotAwaited): повтор — коротко «уже подписано», без ошибки. */
+const notAwaitedText = (err: SignatureNotAwaited) => (err.already ? 'Уже подписано' : 'Сейчас это действие недоступно')
 
 /** Вложения-файлы сообщения: свои и пересланные (ответ @goskey_bot обычно пересылают). */
 export function fileAttachments(message: { body: { attachments?: MaxAttachment[] | null }; link?: { message?: { attachments?: MaxAttachment[] } } | null }) {
@@ -125,19 +128,27 @@ export class SignFlows {
       return true
     }
 
-    const signatureId = await this.signatures.record({
-      shipmentId,
-      titleId: t.id,
-      titleKind: kind,
-      role: spec.role,
-      kind: 'goskey',
-      personId: p.id,
-      cms: sig,
-      signerName: res.signer?.fullName ?? null,
-      signerSnils: res.signer?.snils ?? null,
-      verified: true,
-      verifyResult: `«Госключ», ${res.level === 'ukep' ? 'УКЭП' : 'УНЭП'}: ${res.checks.map((c) => `${c.name} ok`).join(', ')}`,
-    })
+    let signatureId: string
+    try {
+      signatureId = await this.signatures.record({
+        shipmentId,
+        titleId: t.id,
+        titleKind: kind,
+        role: spec.role,
+        kind: 'goskey',
+        personId: p.id,
+        cms: sig,
+        signerName: res.signer?.fullName ?? null,
+        signerSnils: res.signer?.snils ?? null,
+        verified: true,
+        verifyResult: `«Госключ», ${res.level === 'ukep' ? 'УКЭП' : 'УНЭП'}: ${res.checks.map((c) => `${c.name} ok`).join(', ')}`,
+      })
+    } catch (err) {
+      if (!(err instanceof SignatureNotAwaited)) throw err
+      await this.store.clearDialog(p.id)
+      await this.ui.reply(to, { text: `${notAwaitedText(err)}.`, buttons: [[cb('К перевозке', S.view(shipmentId))]] })
+      return true
+    }
     await this.store.clearDialog(p.id)
     const who = [res.signer?.fullName, res.level === 'ukep' ? 'УКЭП' : 'УНЭП'].filter(Boolean).join(', ')
     await this.flows.run(p, { type: spec.command, shipmentId, payload: { signatureId } } as Command, to, `✅ <b>Подпись «Госключа» проверена</b> (${esc(who)}). ${DONE[spec.command] ?? ''}`.trim())
@@ -155,6 +166,7 @@ export class SignFlows {
       const req = await this.demoSigner.request(shipmentId, kind, p.id, spec.role)
       signatureId = (await this.demoSigner.accept(req.titleId, p.id, spec.role, null)).id
     } catch (err) {
+      if (err instanceof SignatureNotAwaited) return this.ui.notify(to, notAwaitedText(err))
       if (err instanceof TitleError) return this.ui.notify(to, `Накладную пока не собрать: ${err.message}`)
       if (err instanceof DemoSignError) return this.ui.notify(to, `Не удалось подписать: ${err.message}`)
       throw err
