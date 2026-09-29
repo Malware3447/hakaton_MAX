@@ -282,6 +282,18 @@ export class ShipmentFlows {
 
     const { invite, shipment } = found
     const role = invite.role
+    // Защита от случайного нажатия (решение 29.09): свою же ссылку не принять, и участник перевозки
+    // не займёт в ней ещё одну роль. Исключение — перевозчик за рулём, но это кнопка «Я сам за рулём», не ссылка.
+    const already = (await this.shipments.participants(shipment.id)).find((x) => x.personId === p.id)
+    if (invite.invitedByPersonId === p.id || (already && already.role !== role)) {
+      return this.ui.reply(to, {
+        text: [
+          `Это приглашение для роли «${ROLE_TITLE[role].toLowerCase()}» — его должен открыть другой человек.`,
+          invite.invitedByPersonId === p.id ? 'Вы сами его отправили: перешлите ссылку тому, кого зовёте.' : `Вы уже в этой перевозке как ${ROLE_TITLE[already!.role].toLowerCase()}.`,
+        ].join('\n'),
+        buttons: [[cb('Открыть перевозку', S.view(shipment.id))], ...menu],
+      })
+    }
     const roles = await this.store.roles(p.id)
     const mine = roles.find((r) => r.role === role)
     const conflict = () =>
@@ -403,19 +415,20 @@ export class ShipmentFlows {
     const shipper = await this.shipments.participantOf(shipmentId, 'shipper')
     const token = await this.shipments.inviteRole(shipmentId, 'consignee', shipper?.personId ?? null)
     const link = inviteLink(this.botUsername, token)
+    // Ссылка — текстом, одним сообщением: кнопка-ссылка открыла бы приглашение самому отправителю (решение 29.09).
+    // Отправитель и водитель — один человек (так бывает на проверке) — одно сообщение.
+    const driver = await this.shipments.participantOf(shipmentId, 'driver')
     if (shipper) {
       await this.messenger
         .send(shipper.maxUserId, {
-          text: `🚚 Машина по перевозке ${esc(view.erpRef)} выехала. Перешлите приглашение приёмщику ${esc(view.consignee.name)} — по нему он примет груз и подпишет накладную без кабинета и своего ЭДО:\n${link}`,
+          text: `🚚 Машина по перевозке ${esc(view.erpRef)} выехала. Перешлите приглашение приёмщику ${esc(view.consignee.name)} — по нему он примет груз и подпишет накладную без кабинета и своего ЭДО. Сами не открывайте: ссылка для получателя.\n${link}`,
         }, { shipmentId })
         .catch((err) => this.log.warn({ err }, 'не удалось написать отправителю'))
     }
-    const driver = await this.shipments.participantOf(shipmentId, 'driver')
-    if (driver) {
+    if (driver && driver.personId !== shipper?.personId) {
       await this.messenger
         .send(driver.maxUserId, {
-          text: `Ссылка для приёмщика ${esc(view.consignee.name)}: если на складе его ещё нет в боте, покажите или перешлите ему.`,
-          buttons: [[{ text: 'Приглашение приёмщику', kind: 'link', payload: link }]],
+          text: `Ссылка для приёмщика ${esc(view.consignee.name)}: если на складе его ещё нет в боте, покажите или перешлите ему. Сами не открывайте.\n${link}`,
         }, { shipmentId })
         .catch((err) => this.log.warn({ err }, 'не удалось написать водителю'))
     }

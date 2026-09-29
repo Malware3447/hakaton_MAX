@@ -113,10 +113,8 @@ export class OrgInviteService {
         .from(membership)
         .leftJoin(org, eq(org.id, membership.orgId))
         .where(and(eq(membership.personId, personId), eq(membership.role, i.role)))
-      if (mine.some((m) => m.orgId === i.orgId)) {
-        await tx.update(orgInvite).set({ acceptedPersonId: personId, acceptedAt: new Date() }).where(eq(orgInvite.id, i.id))
-        return { ok: false, reason: 'already' } as const
-      }
+      // уже в компании — ссылку не тратим: её ещё может открыть тот, кого звали
+      if (mine.some((m) => m.orgId === i.orgId)) return { ok: false, reason: 'already' } as const
       const other = mine.find((m) => m.orgId)
       if (other && i.role !== 'driver') return { ok: false, reason: 'other_org', otherOrg: other.name ?? '' } as const
 

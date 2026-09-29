@@ -167,6 +167,8 @@ export class StaffFlows {
       return this.ui.reply(to, { text: 'По этому приглашению уже вошёл другой человек. Попросите у администратора новую ссылку.', buttons: menu })
     }
     if (found.kind !== 'open') return this.ui.reply(to, { text: 'Приглашение не найдено.', buttons: menu })
+    if (found.invite.invitedByPersonId === p.id)
+      return this.ui.reply(to, { text: 'Это ваша ссылка для нового сотрудника — сами её не открывайте, перешлите ему. Войдёт он, а не вы.', buttons: [[cb('К компании', P.company)], ...menu] })
     const res = await this.invites.join(found.invite.id, p.id)
     if (!res.ok) {
       if (res.reason === 'already') return this.ui.showRole(p, found.invite.role, to, 'Вы уже в этой компании.')

@@ -352,6 +352,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(1, payloadOf(out.last, 'Назначить перевозчика')))
       await act(contact(1, { user_id: 999, first_name: 'Новенький' }))
       expect(out.last?.text).toMatch(/Новенький ещё не пользуется ботом[\s\S]*https:\/\/max\.ru\/test_bot\?start=inv_/)
+      // отправитель открыл свою ссылку для перевозчика — не становится перевозчиком
+      await act(started(1, `inv_${tokenIn(out.last)}`))
+      expect(out.last?.text).toMatch(/приглашение для роли «перевозчик»[\s\S]*Вы сами его отправили/)
     })
   })
 
@@ -745,9 +748,17 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       const toShipper = out.inbox.get(1)!.at(-1)!
       expect(toShipper.text).toMatch(/Машина по перевозке ОТГ-2026-1056 выехала[\s\S]*приёмщику ООО «Волга»[\s\S]*start=inv_/)
       const toDriver = out.inbox.get(800)!.at(-1)!
-      expect(toDriver.buttons?.flat()[0]).toMatchObject({ kind: 'link', text: 'Приглашение приёмщику' })
+      // ссылка текстом, без кнопки: по кнопке её легко открыть самому (решение 29.09)
+      expect(toDriver.text).toMatch(/Ссылка для приёмщика ООО «Волга»[\s\S]*Сами не открывайте[\s\S]*start=inv_/)
+      expect(toDriver.buttons ?? []).toEqual([])
+      expect(tokenIn(toDriver)).toBe(tokenIn(toShipper))
 
       const token = tokenIn(toShipper)
+      // свою ссылку не принять: ни отправителю, ни водителю этой перевозки
+      await act(started(1, `inv_${token}`))
+      expect(out.last?.text).toMatch(/его должен открыть другой человек[\s\S]*Вы сами его отправили/)
+      await act(started(800, `inv_${token}`))
+      expect(out.last?.text).toMatch(/Вы уже в этой перевозке как водитель/)
       await act(started(900, `inv_${token}`))
       expect(out.last?.text).toMatch(/Вы в перевозке как получатель[\s\S]*в пути/)
     })
@@ -1187,6 +1198,9 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(contact(1, { user_id: 7700, first_name: 'Ольга' }))
       expect(out.last?.text).toMatch(/Ольга ещё не пользуется ботом[\s\S]*start=org_/)
       const token = /start=org_([\w-]+)/.exec(out.last!.text)![1]!
+      // администратор открыл свою же ссылку — не тратим её (решение 29.09)
+      await act(started(1, `org_${token}`))
+      expect(out.last?.text).toMatch(/Это ваша ссылка для нового сотрудника/)
       await act(started(7700, `org_${token}`))
       expect(out.last?.text).toMatch(/Вы в компании ООО «Волжский завод моторных масел»/)
       expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Человек 7700 вошёл в компанию по ссылке, роль «отправитель»/)
