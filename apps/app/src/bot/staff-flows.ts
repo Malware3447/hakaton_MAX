@@ -3,7 +3,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import { esc } from '../max/messenger.ts'
 import type { MaxAttachment } from '../max/types.ts'
 import { orgInviteLink, type JoinResult, type OrgInviteService } from '../core/org-invites.ts'
-import { P, ROLE_TITLE, cb, companyScreen } from './screens.ts'
+import { P, ROLE_TITLE, cb, companyScreen, rootMenu } from './screens.ts'
 import type { Reply, Ui } from './shipment-flows.ts'
 import type { BotStore, DialogState, PersonRow, RoleInfo } from './store.ts'
 
@@ -21,6 +21,8 @@ export const SP = {
   approve: (id: string) => `py:${id}`,
   reject: (id: string) => `pn:${id}`,
   signs: (yes: boolean) => `ps:${yes ? 1 : 0}`,
+  leave: 'px',
+  leaveYes: 'pxy',
 }
 
 export class StaffFlows {
@@ -51,7 +53,7 @@ export class StaffFlows {
     }
     if (!r.isAdmin) lines.push('', '<i>Добавить сотрудника может администратор компании.</i>')
     if (note) lines.push('', note)
-    const buttons = [...(r.isAdmin ? [[cb('Добавить сотрудника', SP.add)]] : []), ...screen.buttons!]
+    const buttons = [...(r.isAdmin ? [[cb('Добавить сотрудника', SP.add)]] : []), [cb('Выйти из компании', SP.leave)], ...screen.buttons!]
     return this.ui.reply(to, { text: lines.join('\n'), buttons })
   }
 
@@ -73,6 +75,12 @@ export class StaffFlows {
         return true
       case 'ps':
         await this.setSigns(p, arg === '1', to)
+        return true
+      case 'px':
+        await this.askLeave(p, to)
+        return true
+      case 'pxy':
+        await this.leave(p, to)
         return true
       default:
         return false
@@ -244,6 +252,49 @@ export class StaffFlows {
     await this.invites.setCanSign(p.id, r.org.id, 'consignee', yes)
     await this.store.setActiveRole(p.id, 'consignee')
     return this.ui.showRole({ ...p, activeRole: 'consignee' }, 'consignee', to, yes ? 'Готово: вы подписываете приёмку. Доверенность спросим перед первой подписью.' : 'Готово: вы принимаете груз, подписывает другой сотрудник.')
+  }
+
+  // ---------- выход из компании (HAKATON-51) ----------
+
+  private async askLeave(p: PersonRow, to: Reply) {
+    const r = await this.active(p)
+    if (!r?.org || r.role === 'driver') return this.ui.notify(to, 'Откройте компанию в роли отправителя, перевозчика или получателя')
+    const plan = await this.invites.leavePlan(p.id, r.org.id, r.role)
+    const lines = [`<b>Выйти из компании ${esc(r.org.name)}?</b>`, '', `Роль «${role(r.role)}» у вас пропадёт. Вернуться можно только по приглашению администратора.`]
+    if (plan.newAdmin) lines.push(`Администратором станет ${esc(plan.newAdmin.name)}.`)
+    if (plan.active.length && plan.heir)
+      lines.push(`Перевозки в работе (${plan.active.length}: ${plan.active.slice(0, 5).map((s) => esc(s.erpRef)).join(', ')}${plan.active.length > 5 ? ' и другие' : ''}) перейдут к сотруднику ${esc(plan.heir.name)}.`)
+    if (plan.active.length && !plan.heir) {
+      lines.push('', `⚠️ У вас ${plan.active.length} ${plan.active.length === 1 ? 'перевозка' : 'перевозки'} в работе, а других сотрудников в компании нет — передать их некому. Сначала добавьте сотрудника или завершите перевозки.`)
+      return this.ui.reply(to, { text: lines.join('\n'), buttons: [[cb('Добавить сотрудника', SP.add)], [cb('Назад', P.company)]] })
+    }
+    if (!plan.others.length) lines.push('Вы последний сотрудник: компания останется в системе, первый подключивший её ИНН станет администратором.')
+    return this.ui.reply(to, { text: lines.join('\n'), buttons: [[cb('Да, выйти', SP.leaveYes)], [cb('Отмена', P.company)]] })
+  }
+
+  private async leave(p: PersonRow, to: Reply) {
+    const r = await this.active(p)
+    if (!r?.org || r.role === 'driver') return this.ui.notify(to, 'Откройте компанию в роли отправителя, перевозчика или получателя')
+    const res = await this.invites.leave(p.id, r.org.id, r.role)
+    if (!res.ok) return this.askLeave(p, to)
+    const { plan } = res
+    const orgName = esc(r.org.name)
+    if (plan.newAdmin)
+      await this.messenger
+        .send(plan.newAdmin.maxUserId, { text: `🔔 ${esc(p.name)} вышел из компании ${orgName}. Теперь администратор — вы: добавляете и принимаете новых сотрудников.`, buttons: [[cb('Открыть', P.open(r.role))]] })
+        .catch((err) => this.log.warn({ err }, 'не удалось написать новому администратору'))
+    if (plan.heir && plan.active.length)
+      await this.messenger
+        .send(plan.heir.maxUserId, {
+          text: `🔔 ${esc(p.name)} вышел из компании ${orgName}. Его перевозки в работе теперь ведёте вы:`,
+          buttons: plan.active.slice(0, 8).map((s) => [cb(s.erpRef, `v:${s.id}`)]),
+        })
+        .catch((err) => this.log.warn({ err }, 'не удалось написать преемнику'))
+    const told = new Set([plan.newAdmin?.personId, plan.active.length ? plan.heir?.personId : undefined])
+    for (const a of plan.others.filter((o) => o.isAdmin && !told.has(o.personId)))
+      await this.messenger.send(a.maxUserId, { text: `ℹ️ ${esc(p.name)} вышел из компании ${orgName}.` }).catch((err) => this.log.warn({ err }, 'не удалось написать администратору'))
+    const moved = plan.active.length && plan.heir ? ` Перевозки в работе переданы: ${esc(plan.heir.name)}.` : ''
+    return this.ui.reply(to, rootMenu(await this.store.roles(p.id), null, `✅ Вы вышли из компании ${orgName}.${moved}`))
   }
 
   private async tellAdmins(res: Extract<JoinResult, { ok: true }>, text: string, except: string) {

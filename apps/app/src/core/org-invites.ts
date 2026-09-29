@@ -1,7 +1,7 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, ne, notInArray, sql } from 'drizzle-orm'
 import type { Role } from '@nk/domain'
 import type { Db } from '../db/client.ts'
-import { membership, org, orgInvite, person } from '../db/schema.ts'
+import { event, membership, org, orgInvite, participant, person, shipment } from '../db/schema.ts'
 import { INVITE_TTL_MS, newInviteToken, sha256 } from './invites.ts'
 
 // Люди компании (HAKATON-48). Первый человек организации в роли — администратор (решение 24.09),
@@ -146,4 +146,68 @@ export class OrgInviteService {
       .set({ canSign })
       .where(and(eq(membership.personId, personId), eq(membership.orgId, orgId), eq(membership.role, role)))
   }
+
+  /**
+   * Что будет при выходе из компании: кто станет администратором, если уходит последний,
+   * и кому перейдут перевозки в работе. Без сотрудников перевозки передать некому — выход запрещён.
+   */
+  async leavePlan(personId: string, orgId: string, role: Role, db: Db = this.db): Promise<LeavePlan> {
+    const others = await db
+      .select({ personId: person.id, maxUserId: person.maxUserId, name: person.name, isAdmin: membership.isAdmin })
+      .from(membership)
+      .innerJoin(person, eq(person.id, membership.personId))
+      .where(and(eq(membership.orgId, orgId), eq(membership.role, role), ne(membership.personId, personId)))
+      .orderBy(membership.createdAt)
+    const [me] = await db
+      .select({ isAdmin: membership.isAdmin })
+      .from(membership)
+      .where(and(eq(membership.personId, personId), eq(membership.orgId, orgId), eq(membership.role, role)))
+    const newAdmin = me?.isAdmin && !others.some((o) => o.isAdmin) ? (others[0] ?? null) : null
+    const heir = others.find((o) => o.isAdmin) ?? newAdmin
+    const orgCol = role === 'shipper' ? shipment.shipperOrgId : role === 'consignee' ? shipment.consigneeOrgId : shipment.carrierOrgId
+    const active = await db
+      .select({ id: shipment.id, erpRef: shipment.erpRef })
+      .from(participant)
+      .innerJoin(shipment, eq(shipment.id, participant.shipmentId))
+      .where(and(eq(participant.personId, personId), eq(participant.role, role), eq(orgCol, orgId), notInArray(shipment.state, ['closed', 'cancelled'])))
+    return { member: Boolean(me), others, newAdmin, heir, active }
+  }
+
+  /** Выйти из компании: роль пропадает, права администратора и перевозки в работе переходят к сотруднику. */
+  async leave(personId: string, orgId: string, role: Role): Promise<{ ok: true; plan: LeavePlan } | { ok: false; reason: 'not_member' | 'nobody_to_take' }> {
+    return this.db.transaction(async (tx) => {
+      const plan = await this.leavePlan(personId, orgId, role, tx as unknown as Db)
+      if (!plan.member) return { ok: false, reason: 'not_member' } as const
+      if (plan.active.length && !plan.heir) return { ok: false, reason: 'nobody_to_take' } as const
+      if (plan.newAdmin)
+        await tx.update(membership).set({ isAdmin: true }).where(and(eq(membership.personId, plan.newAdmin.personId), eq(membership.orgId, orgId), eq(membership.role, role)))
+      for (const s of plan.active) {
+        await tx
+          .update(participant)
+          .set({ personId: plan.heir!.personId, source: 'known', joinedAt: new Date() })
+          .where(and(eq(participant.shipmentId, s.id), eq(participant.role, role), eq(participant.personId, personId)))
+        await tx.insert(event).values({
+          shipmentId: s.id,
+          type: 'participant.transferred',
+          actorKind: 'person',
+          actorPersonId: personId,
+          actorRole: role,
+          payload: { to: plan.heir!.personId, reason: 'left_company' },
+        })
+      }
+      await tx.delete(membership).where(and(eq(membership.personId, personId), eq(membership.orgId, orgId), eq(membership.role, role)))
+      await tx.update(person).set({ activeRole: null }).where(and(eq(person.id, personId), eq(person.activeRole, role)))
+      return { ok: true, plan } as const
+    })
+  }
+}
+
+export interface LeavePlan {
+  member: boolean
+  others: { personId: string; maxUserId: number; name: string; isAdmin: boolean }[]
+  /** уходит последний администратор — права переходят этому сотруднику */
+  newAdmin: { personId: string; maxUserId: number; name: string } | null
+  /** кому перейдут перевозки в работе */
+  heir: { personId: string; maxUserId: number; name: string } | null
+  active: { id: string; erpRef: string }[]
 }

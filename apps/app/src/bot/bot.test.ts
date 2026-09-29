@@ -1189,7 +1189,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(1, 'open:shipper'))
       await act(press(1, 'company'))
       expect(out.last?.text).toMatch(/Сотрудники<\/b> \(1\)\n• Человек 1 \(вы\) — администратор, подписывает/)
-      expect(buttons(out.last)).toEqual(['Добавить сотрудника', 'Назад'])
+      expect(buttons(out.last)).toEqual(['Добавить сотрудника', 'Выйти из компании', 'Назад'])
     })
 
     it('контакт того, кого нет в боте, — ссылка; по ней он входит в компанию, администратору — «вошёл»', async () => {
@@ -1207,7 +1207,7 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       await act(press(7700, 'company'))
       expect(out.last?.text).toMatch(/Сотрудники<\/b> \(2\)/)
       expect(out.last?.text).toMatch(/Добавить сотрудника может администратор/)
-      expect(buttons(out.last)).toEqual(['Назад'])
+      expect(buttons(out.last)).toEqual(['Выйти из компании', 'Назад'])
       // по той же ссылке второй раз не войти
       await act(started(7701, `org_${token}`))
       expect(out.last?.text).toMatch(/уже вошёл другой человек/)
@@ -1371,6 +1371,40 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       const [a, b] = await Promise.all([signatures.record(input), signatures.record(input)])
       expect(a).toBe(b)
       expect(await sigsOf(id2, 'T2', 'carrier')).toHaveLength(1)
+    })
+  })
+
+  describe('выход из компании (HAKATON-51)', () => {
+    it('сотрудник выходит: роль пропадает, администратору — сообщение', async () => {
+      await act(press(7720, 'open:shipper'))
+      await act(press(7720, 'company'))
+      await act(press(7720, payloadOf(out.last, 'Выйти из компании')))
+      expect(out.last?.text).toMatch(/Выйти из компании ООО «Волжский завод моторных масел»\?[\s\S]*Роль «отправитель» у вас пропадёт/)
+      await act(press(7720, payloadOf(out.last, 'Да, выйти')))
+      expect(out.last?.text).toMatch(/✅ Вы вышли из компании ООО «Волжский завод моторных масел»/)
+      expect(buttons(out.last)).toContain('+ Отправитель')
+      expect(out.inbox.get(1)!.at(-1)!.text).toMatch(/Человек 7720 вышел из компании/)
+    })
+
+    it('последний администратор выходит: права и перевозки в работе переходят сотруднику', async () => {
+      const [p1] = await conn.db.select().from(person).where(eq(person.maxUserId, 1))
+      const [p7700] = await conn.db.select().from(person).where(eq(person.maxUserId, 7700))
+      const mine = await conn.db.select().from(participant).where(and(eq(participant.personId, p1!.id), eq(participant.role, 'shipper')))
+      expect(mine.length).toBeGreaterThan(0)
+      await act(press(1, 'open:shipper'))
+      await act(press(1, 'company'))
+      await act(press(1, payloadOf(out.last, 'Выйти из компании')))
+      expect(out.last?.text).toMatch(/Администратором станет Человек 7700[\s\S]*Перевозки в работе \(\d+: ОТГ-2026-[^)]*и другие\) перейдут к сотруднику Человек 7700/)
+      await act(press(1, payloadOf(out.last, 'Да, выйти')))
+      expect(out.last?.text).toMatch(/Перевозки в работе переданы: Человек 7700/)
+      const got = out.inbox.get(7700)!.slice(-2).map((m) => m.text).join('\n')
+      expect(got).toMatch(/Теперь администратор — вы/)
+      expect(got).toMatch(/Его перевозки в работе теперь ведёте вы/)
+      const [m7700] = await conn.db.select().from(membership).where(and(eq(membership.personId, p7700!.id), eq(membership.role, 'shipper')))
+      expect(m7700!.isAdmin).toBe(true)
+      expect(await conn.db.select().from(membership).where(and(eq(membership.personId, p1!.id), eq(membership.role, 'shipper')))).toEqual([])
+      const moved = await conn.db.select().from(participant).where(and(eq(participant.personId, p7700!.id), eq(participant.role, 'shipper')))
+      expect(moved.length).toBeGreaterThan(0)
     })
   })
 })
