@@ -6,6 +6,7 @@ import { membership, org, participant, person, shipment, vehicle, type LineCheck
 import type { ExecResult, ShipmentService } from '../core/shipments.ts'
 import type { FleetService } from '../core/fleet.ts'
 import type { BotStore } from '../bot/store.ts'
+import { PoaService } from '../core/poa.ts'
 import { BODY_TYPES, PEP } from '../bot/trip-flows.ts'
 import { S, cb } from '../bot/screens.ts'
 import { esc } from '../max/messenger.ts'
@@ -237,7 +238,10 @@ export class MiniAppActions {
    * Реквизиты правит администратор и только введённые вручную (из справочника — не правятся),
    * доверенность — своя: она у каждого подписанта своя.
    */
-  async saveCompany(scope: Scope, patch: { name?: string; address?: string; poa?: { number: string; validTo: string } }): Promise<ActionResult> {
+  async saveCompany(
+    scope: Scope,
+    patch: { name?: string; address?: string; signerKind?: 'head' | 'employee'; poa?: { number: string; issuedAt: string; validTo: string } },
+  ): Promise<ActionResult> {
     const [row] = await this.db
       .select({ m: membership, o: org })
       .from(membership)
@@ -255,16 +259,21 @@ export class MiniAppActions {
       if (address !== undefined && address.length < 10) return fail(400, 'invalid_payload', 'Нужен полный адрес с индексом')
       await this.db.update(org).set({ ...(name ? { name } : {}), ...(address ? { address } : {}) }).where(eq(org.id, row.o.id))
     }
+    // МЧД и «кто подписывает» — своё у каждого подписанта (HAKATON-49); проверки те же, что в боте
+    if ((patch.signerKind || patch.poa) && scope.role === 'driver') return fail(400, 'invalid_payload', 'Водитель подтверждает приём и сдачу груза своей подписью — доверенность не нужна')
+    const poas = new PoaService(this.db)
+    if (patch.signerKind) await poas.setSignerKind(row.m.id, patch.signerKind)
     if (patch.poa) {
-      if (scope.role === 'driver') return fail(400, 'invalid_payload', 'У водителя доверенности нет')
-      const number = patch.poa.number.trim()
-      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(patch.poa.validTo)
-      if (number.length < 3) return fail(400, 'invalid_payload', 'Укажите номер доверенности')
-      if (!m) return fail(400, 'invalid_payload', 'Укажите, до какого числа действует доверенность')
-      // Как в боте: до конца дня по Москве
-      const validTo = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 20, 59, 59))
-      if (Number.isNaN(validTo.getTime()) || validTo.getTime() < Date.now()) return fail(400, 'invalid_payload', 'Доверенность уже истекла — укажите действующую')
-      await this.db.update(membership).set({ poaNumber: number.slice(0, 100), poaValidTo: validTo, canSign: true }).where(eq(membership.id, row.m.id))
+      const day = (s: string) => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
+        return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)) : null
+      }
+      const issuedAt = day(patch.poa.issuedAt)
+      const validTo = day(patch.poa.validTo)
+      if (!issuedAt) return fail(400, 'invalid_payload', 'Укажите дату выдачи доверенности')
+      if (!validTo) return fail(400, 'invalid_payload', 'Укажите, до какого числа действует доверенность')
+      const res = await poas.addManual({ membershipId: row.m.id, number: patch.poa.number, issuedAt, validTo })
+      if (!res.ok) return fail(400, 'invalid_payload', res.error ?? 'Доверенность не принята')
     }
     return { ok: true }
   }

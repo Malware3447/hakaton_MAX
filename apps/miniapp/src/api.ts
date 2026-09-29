@@ -167,7 +167,7 @@ export class ApiData implements DataSource {
     return call<Company>('GET', this.r('/company'))
   }
 
-  saveCompany(patch: { name?: string; address?: string; poa?: { number: string; validTo: string } }) {
+  saveCompany(patch: { name?: string; address?: string; signerKind?: 'head' | 'employee'; poa?: { number: string; issuedAt: string; validTo: string } }) {
     return call<Company>('PUT', this.r('/company'), patch)
   }
 

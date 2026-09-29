@@ -317,12 +317,21 @@ export class MockData implements DataSource {
     return structuredClone(this.w.companies[this.w.activeRole])
   }
 
-  async saveCompany(patch: { name?: string; address?: string; poa?: { number: string; validTo: string } }) {
+  async saveCompany(patch: { name?: string; address?: string; signerKind?: 'head' | 'employee'; poa?: { number: string; issuedAt: string; validTo: string } }) {
     const c = this.w.companies[this.w.activeRole]
     if ((patch.name || patch.address) && c.verified) throw new Error('Реквизиты из справочника не правятся вручную')
     if (patch.name) c.name = patch.name.trim()
     if (patch.address) c.address = patch.address.trim()
-    if (patch.poa) c.poa = patch.poa
+    if (patch.signerKind) c.signerKind = patch.signerKind
+    if (patch.poa) {
+      // те же проверки, что на сервере (apps/app/src/core/poa.ts → addManual)
+      const number = patch.poa.number.trim().toLowerCase()
+      if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/.test(number)) throw new Error('Номер доверенности из реестра ФНС выглядит так: 4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f')
+      if (new Date(patch.poa.issuedAt).getTime() > Date.now()) throw new Error('Дата выдачи ещё не наступила')
+      if (new Date(patch.poa.validTo).getTime() < startOfDay(new Date()).getTime()) throw new Error('Доверенность уже истекла — укажите действующую')
+      c.poa = { number, issuedAt: patch.poa.issuedAt, validTo: patch.poa.validTo, source: 'manual', signatureOk: null }
+      c.signerKind = 'employee'
+    }
     this.emit(null)
     return structuredClone(c)
   }
@@ -561,7 +570,8 @@ function companies(): Record<Role, Company> {
       kpp: SEED.shipper.kpp,
       address: SEED.shipper.address,
       verified: true,
-      poa: { number: SEED.shipper.poaNumber, validTo: SEED.shipper.poaValidTo },
+      signerKind: 'employee',
+      poa: { number: '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', issuedAt: '2026-09-01', validTo: SEED.shipper.poaValidTo, source: 'file', signatureOk: true },
       employees: [
         { name: 'Марина Соколова', isAdmin: true, isMe: false },
         { name: 'Галина Фёдорова', isAdmin: false, isMe: false },
@@ -575,7 +585,8 @@ function companies(): Record<Role, Company> {
       kpp: car.kpp,
       address: car.address,
       verified: true,
-      poa: { number: 'МЧД-2026-000912', validTo: soon },
+      signerKind: 'employee',
+      poa: { number: '9b2e7c41-3d5a-4f86-a1c0-6e8d2b4f7a13', issuedAt: '2025-10-05', validTo: soon, source: 'manual', signatureOk: null },
       employees: [
         { name: car.dispatcher, isAdmin: true, isMe: false },
         { name: ME_NAME, isAdmin: false, isMe: true },
@@ -588,6 +599,7 @@ function companies(): Record<Role, Company> {
       kpp: car.kpp,
       address: car.address,
       verified: true,
+      signerKind: null,
       poa: null,
       employees: [],
     },
@@ -598,6 +610,7 @@ function companies(): Record<Role, Company> {
       kpp: vol.kpp,
       address: vol.address,
       verified: false,
+      signerKind: 'head',
       poa: null,
       employees: [
         { name: ME_NAME, isAdmin: true, isMe: true },

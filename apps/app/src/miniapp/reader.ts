@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm'
 import { ACTIVE_STATES, type Role } from '@nk/domain'
 import type { Db } from '../db/client.ts'
-import { event, membership, mockErpShipment, org, participant, person, shipment, signature, title, vehicle } from '../db/schema.ts'
+import { event, membership, mockErpShipment, org, participant, person, poa, shipment, signature, title, vehicle } from '../db/schema.ts'
 import { ROLE_TITLE } from '../bot/screens.ts'
 import { BotStore } from '../bot/store.ts'
 import { isParticipant, scopeOf, visibleTo, type Scope } from './access.ts'
@@ -439,9 +439,22 @@ export class MiniAppReader {
       kpp: o.kpp,
       address: o.address,
       verified: o.verified,
-      poa: m.poaNumber && m.poaValidTo ? { number: m.poaNumber, validTo: m.poaValidTo.toISOString() } : null,
+      signerKind: m.signerKind ?? null,
+      poa: await this.poaOf(m),
       employees: people.map((x) => ({ name: x.name, isAdmin: x.isAdmin, isMe: x.id === scope.personId })),
     }
+  }
+
+  /** Текущая МЧД роли; записанная до HAKATON-49 — только номер и срок из membership. */
+  private async poaOf(m: typeof membership.$inferSelect): Promise<Company['poa']> {
+    const [p] = await this.db
+      .select()
+      .from(poa)
+      .where(and(eq(poa.membershipId, m.id), isNull(poa.replacedAt)))
+      .orderBy(desc(poa.createdAt))
+      .limit(1)
+    if (p) return { number: p.number, issuedAt: p.issuedAt.toISOString(), validTo: p.validTo.toISOString(), source: p.source, signatureOk: p.signatureOk }
+    return m.poaNumber && m.poaValidTo ? { number: m.poaNumber, issuedAt: null, validTo: m.poaValidTo.toISOString(), source: 'legacy', signatureOk: null } : null
   }
 
   private async orgs(ids: (string | null)[]): Promise<OrgRow[]> {

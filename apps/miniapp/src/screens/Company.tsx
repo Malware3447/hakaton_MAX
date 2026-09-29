@@ -1,13 +1,19 @@
 import { useState } from 'react'
 import { Button, CellList, CellSimple, Input, Typography } from '@maxhub/max-ui'
 import { Loading, Page, useApp, useLoad } from '../shell.tsx'
-import { KV, Note, Section, Sheet, TopBar, useToast } from '../ui/kit.tsx'
+import { Chip, KV, Note, Section, Sheet, TopBar, useToast } from '../ui/kit.tsx'
 import { IconAlert, IconEdit, IconUserPlus } from '../ui/icons.tsx'
 import { plural, ROLE_TITLE } from '../texts.ts'
 
 // Компания текущей роли: реквизиты, доверенность, сотрудники и приглашение.
 
 const DAY = 86_400_000
+
+const POA_SOURCE: Record<'file' | 'manual' | 'legacy', (signatureOk: boolean | null) => string> = {
+  file: (ok) => (ok ? 'файл доверенности и подпись руководителя' : 'файл доверенности; подпись руководителя не присылали'),
+  manual: () => 'введена вручную — компания и представитель не проверены',
+  legacy: () => 'записана до проверки доверенностей',
+}
 
 export function CompanyScreen() {
   const { back, data, role } = useApp()
@@ -19,6 +25,14 @@ export function CompanyScreen() {
   if (!c) return <Page><TopBar title="Компания" onBack={back} /><Loading /></Page>
 
   const poaDays = c.poa ? Math.ceil((new Date(c.poa.validTo).getTime() - Date.now()) / DAY) : null
+  const setKind = async (signerKind: 'head' | 'employee') => {
+    try {
+      await data.saveCompany({ signerKind })
+      reload()
+    } catch (e) {
+      toast({ text: e instanceof Error ? e.message : String(e) })
+    }
+  }
   const signs = role !== 'driver'
   // Реквизиты, введённые вручную, правит администратор компании в этой роли
   const admin = c.employees.find((e) => e.isMe)?.isAdmin ?? false
@@ -49,11 +63,33 @@ export function CompanyScreen() {
       </Section>
 
       {signs && (
+        <Section title="Кто подписывает за компанию">
+          <div className="signer-kind">
+            <div className="chips-wrap">
+              <Chip active={c.signerKind === 'head'} onClick={() => void setKind('head')}>
+                Я руководитель или ИП
+              </Chip>
+              <Chip active={c.signerKind === 'employee'} onClick={() => void setKind('employee')}>
+                Я сотрудник, по доверенности
+              </Chip>
+            </div>
+            <Typography.Body variant="small" className="muted">
+              {c.signerKind === 'head'
+                ? 'Вы подписываете сами, доверенность не нужна.'
+                : c.signerKind === 'employee'
+                  ? 'Сотрудник подписывает за компанию только по действующей машиночитаемой доверенности (МЧД): одной подписи мало.'
+                  : 'Ещё не выбрано — бот спросит перед первой подписью.'}
+            </Typography.Body>
+          </div>
+        </Section>
+      )}
+
+      {signs && c.signerKind !== 'head' && (
         <Section
           title="Доверенность на подпись"
           after={
             <Button size="xsmall" variant="ghost" iconBefore={<IconEdit size={16} />} onClick={() => setEditPoa(true)}>
-              {c.poa ? 'Продлить' : 'Добавить'}
+              {c.poa ? 'Заменить' : 'Добавить'}
             </Button>
           }
         >
@@ -62,7 +98,10 @@ export function CompanyScreen() {
               <KV
                 rows={[
                   ['Номер', c.poa.number],
+                  ['Выдана', c.poa.issuedAt ? new Date(c.poa.issuedAt).toLocaleDateString('ru-RU') : null],
                   ['Действует до', new Date(c.poa.validTo).toLocaleDateString('ru-RU')],
+                  ['Проверено', POA_SOURCE[c.poa.source](c.poa.signatureOk)],
+                  ['Реестр ФНС', 'не проверен: недоступен с сервера (модель)'],
                 ]}
               />
               {poaDays !== null && poaDays <= 14 && (
@@ -72,10 +111,17 @@ export function CompanyScreen() {
                   </Note>
                 </div>
               )}
+              {c.poa.source === 'legacy' && (
+                <div className="pad">
+                  <Note tone="warn" icon={<IconAlert size={18} />}>
+                    Записана только с номером и сроком. Перед подписью бот попросит доверенность заново — с датой выдачи или файлом.
+                  </Note>
+                </div>
+              )}
             </>
           ) : (
             <Typography.Body variant="small" className="muted pad">
-              Доверенности нет. Бот спросит её перед первой подписью за компанию.
+              Доверенности нет. Пришлите файл МЧД боту в чат — проверим его и подпись руководителя — или введите номер и даты здесь.
             </Typography.Body>
           )}
         </Section>
@@ -176,16 +222,18 @@ function ReqSheet(props: { open: boolean; onClose: () => void; name: string; add
   )
 }
 
-function PoaSheet(props: { open: boolean; onClose: () => void; value: { number: string; validTo: string } | null; onSaved: () => void }) {
+function PoaSheet(props: { open: boolean; onClose: () => void; value: { number: string; issuedAt: string | null; validTo: string } | null; onSaved: () => void }) {
   const { data } = useApp()
   const toast = useToast()
   const [number, setNumber] = useState(props.value?.number ?? '')
+  const [issuedAt, setIssuedAt] = useState(props.value?.issuedAt?.slice(0, 10) ?? '')
   const [validTo, setValidTo] = useState(props.value?.validTo?.slice(0, 10) ?? '')
+  const guid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(number.trim())
   // Действует до конца указанного дня
   const bad = !!validTo && new Date(`${validTo}T23:59:59`).getTime() < Date.now()
   const save = async () => {
     try {
-      await data.saveCompany({ poa: { number: number.trim(), validTo } })
+      await data.saveCompany({ poa: { number: number.trim(), issuedAt, validTo } })
       props.onSaved()
       props.onClose()
     } catch (e) {
@@ -198,7 +246,7 @@ function PoaSheet(props: { open: boolean; onClose: () => void; value: { number: 
       title="Доверенность"
       onClose={props.onClose}
       footer={
-        <Button size="large" stretched disabled={!number.trim() || !validTo || bad} onClick={() => void save()}>
+        <Button size="large" stretched disabled={!guid || !issuedAt || !validTo || bad} onClick={() => void save()}>
           Сохранить
         </Button>
       }
@@ -207,7 +255,17 @@ function PoaSheet(props: { open: boolean; onClose: () => void; value: { number: 
         <label htmlFor="poa-num" className="small">
           Номер машиночитаемой доверенности
         </label>
-        <Input id="poa-num" placeholder="МЧД-2026-000417" value={number} onChange={(e) => setNumber(e.target.value)} />
+        <Input
+          id="poa-num"
+          placeholder="4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          value={number}
+          onChange={(e) => setNumber(e.target.value)}
+          hint={number.trim() && !guid ? 'Номер из реестра ФНС: 32 знака с дефисами — он есть в самой доверенности' : undefined}
+        />
+        <label htmlFor="poa-from" className="small">
+          Дата выдачи
+        </label>
+        <Input id="poa-from" type="date" value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} />
         <label htmlFor="poa-to" className="small">
           Действует до
         </label>

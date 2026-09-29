@@ -151,7 +151,18 @@ export interface Company {
   address: string
   /** false — реквизиты введены руками: их можно править */
   verified: boolean
-  poa: { number: string; validTo: string } | null
+  /** кто подписывает за компанию (HAKATON-49): руководитель или ИП — сам, сотрудник — по МЧД; null — ещё не выбрали */
+  signerKind: 'head' | 'employee' | null
+  /** текущая МЧД: откуда она и что проверено */
+  poa: {
+    number: string
+    issuedAt: string | null
+    validTo: string
+    /** file — прислан файл МЧД, manual — номер и даты руками, legacy — записано до проверки МЧД */
+    source: 'file' | 'manual' | 'legacy'
+    /** подпись руководителя под файлом: true — проверена, null — не присылали */
+    signatureOk: boolean | null
+  } | null
   employees: Employee[]
 }
 
@@ -245,7 +256,7 @@ export interface DataSource {
   saveVehicle(v: VehicleInput): Promise<Vehicle[]>
   drivers(): Promise<Driver[]>
   company(): Promise<Company>
-  saveCompany(patch: { name?: string; address?: string; poa?: { number: string; validTo: string } }): Promise<Company>
+  saveCompany(patch: { name?: string; address?: string; signerKind?: 'head' | 'employee'; poa?: { number: string; issuedAt: string; validTo: string } }): Promise<Company>
   invite(): Promise<string>
   notices(): Promise<Notice[]>
   markRead(): Promise<void>

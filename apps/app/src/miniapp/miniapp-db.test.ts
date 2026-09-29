@@ -246,6 +246,29 @@ describe.skipIf(!url)('мини-приложение: у каждой роли �
     expect((await get(P.oleg, '/fleet/drivers')).json().map((d: { name: string }) => d.name)).toEqual(['Иван Водителев'])
   })
 
+  it('кто подписывает и доверенность — своё у каждого подписанта, с теми же проверками, что в боте (HAKATON-49)', async () => {
+    const put = async (who: number, path: string, payload: unknown) =>
+      app.inject({ method: 'PUT', url: `/api${path}`, headers: { authorization: `Bearer ${await login(who)}` }, payload: payload as object })
+    expect((await get(P.marina, '/company?role=shipper')).json()).toMatchObject({ signerKind: null, poa: null })
+
+    expect((await put(P.marina, '/company?role=shipper', { signerKind: 'employee' })).statusCode).toBe(200)
+    const bad = await put(P.marina, '/company?role=shipper', { poa: { number: 'МЧД-1', issuedAt: '2026-09-01', validTo: '2027-01-01' } })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json().message).toMatch(/выглядит так/)
+    const expired = await put(P.marina, '/company?role=shipper', { poa: { number: '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', issuedAt: '2020-01-01', validTo: '2020-06-01' } })
+    expect(expired.json().message).toMatch(/истекла/)
+
+    const ok = await put(P.marina, '/company?role=shipper', { poa: { number: '4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F', issuedAt: '2026-09-01', validTo: '2099-12-31' } })
+    expect(ok.statusCode).toBe(200)
+    const co = (await get(P.marina, '/company?role=shipper')).json()
+    expect(co).toMatchObject({ signerKind: 'employee', poa: { number: '4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', source: 'manual', signatureOk: null } })
+    expect(co.poa.issuedAt.slice(0, 10)).toBe('2026-09-01')
+
+    // у Ларисы в другой компании доверенности нет — своя у каждого
+    expect((await get(P.larisa, '/company?role=shipper')).json().poa).toBeNull()
+    expect((await put(P.ivan, '/company?role=driver', { signerKind: 'employee' })).statusCode).toBe(400)
+  })
+
   it('раздел событий — только по перевозкам своей роли, прочитанное — тоже по роли', async () => {
     const marina = (await get(P.marina, '/notices?role=shipper')).json() as { event: { erpRef: string } }[]
     expect(marina.length).toBeGreaterThan(0)

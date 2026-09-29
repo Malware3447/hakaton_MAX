@@ -88,7 +88,8 @@ const VehicleBody = z.object({
 const CompanyBody = z.object({
   name: z.string().max(300).optional(),
   address: z.string().max(500).optional(),
-  poa: z.object({ number: z.string().max(100), validTo: z.string().max(40) }).optional(),
+  signerKind: z.enum(['head', 'employee']).optional(),
+  poa: z.object({ number: z.string().max(100), issuedAt: z.string().max(40), validTo: z.string().max(40) }).optional(),
 })
 
 const NO_BOT = { error: 'bot_off', message: 'Бот сейчас не запущен: шаги и документы недоступны, можно только смотреть' }
