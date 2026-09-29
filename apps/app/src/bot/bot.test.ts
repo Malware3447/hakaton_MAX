@@ -1139,6 +1139,30 @@ describe.skipIf(!url)('бот: меню ролей и анкеты', () => {
       vi.unstubAllGlobals()
     })
 
+    it('другая компания грузит ту же таблицу — номера у компаний независимы (решение 29.09)', async () => {
+      await act(press(8800, 'add:shipper'))
+      await act(text(8800, '7725000018'))
+      await act(press(8800, 'f:yes'))
+      await act(press(8800, 'f:signer_head'))
+      await act(press(8800, 'f:erp'))
+      await act(press(8800, 'xi'))
+      serve(await buildWorkbook(sampleRows(await readSeed())))
+      await act(fileMsg(8800, 'otgruzki.xlsx', 'https://files.test/ok'))
+      expect(out.last?.text).toMatch(/Понял 17 отгрузок/)
+      expect(out.last?.text).not.toMatch(/занят|другой компании/)
+      await act(press(8800, payloadOf(out.last, 'Загрузить 17')))
+      expect(out.last?.text).toMatch(/новых — 17/)
+      // у каждой своя ОТГ-2026-2040: открываются разные перевозки
+      await act(press(8800, 'sl:0'))
+      expect(out.last?.text).toMatch(/Всего 17/)
+      vi.unstubAllGlobals()
+      const both = await conn.db.select().from(shipment).where(eq(shipment.erpRef, 'ОТГ-2026-2040'))
+      expect(both).toHaveLength(1) // открыта пока только у завода
+      await act(press(8800, payloadOf(out.last, '2040')))
+      expect(out.last?.text).toMatch(/Перевозка ОТГ-2026-2040[\s\S]*ООО «Настоящая»/)
+      expect(await conn.db.select().from(shipment).where(eq(shipment.erpRef, 'ОТГ-2026-2040'))).toHaveLength(2)
+    })
+
     it('«Загрузить» без свежей проверки — просим файл заново', async () => {
       await act(press(1, 'xc'))
       expect(out.last?.text).toMatch(/Проверка устарела/)

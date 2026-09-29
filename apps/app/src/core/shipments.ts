@@ -85,7 +85,7 @@ export class ShipmentService {
       return existing.id
     }
 
-    const src = await this.erp.getShipment(input.erpRef)
+    const src = await this.erp.getShipment(input.shipperInn, input.erpRef)
     if (!src || src.shipperInn !== input.shipperInn) throw new Error(`отгрузки ${input.erpRef} нет в учётной системе отправителя`)
     const consigneeOrgId = await this.ensureOrg(src.consignee.inn, src.consignee.name)
 

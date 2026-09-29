@@ -30,25 +30,28 @@ export class MockErp implements ErpAdapter {
     return rows.map((r) => this.toErp(r))
   }
 
-  async getShipment(ref: string): Promise<ErpShipment | null> {
-    const [row] = await this.db.select().from(mockErpShipment).where(eq(mockErpShipment.ref, ref))
+  async getShipment(shipperInn: string, ref: string): Promise<ErpShipment | null> {
+    const [row] = await this.db
+      .select()
+      .from(mockErpShipment)
+      .where(and(eq(mockErpShipment.shipperInn, shipperInn), eq(mockErpShipment.ref, ref)))
     return row ? this.toErp(row) : null
   }
 
-  async writeBack(ref: string, status: WaybillStatus): Promise<void> {
-    await this.db.insert(mockErpWriteback).values({ ref, status })
+  async writeBack(shipperInn: string, ref: string, status: WaybillStatus): Promise<void> {
+    await this.db.insert(mockErpWriteback).values({ shipperInn, ref, status })
   }
 
-  /** Что уже есть по этим номерам: чья отгрузка и начата ли по ней перевозка. */
-  async existing(refs: string[]): Promise<Map<string, { shipperInn: string; started: boolean }>> {
+  /** Что уже есть по этим номерам в учётке этого отправителя и начата ли по отгрузке перевозка. */
+  async existing(shipperInn: string, refs: string[]): Promise<Map<string, { started: boolean }>> {
     if (!refs.length) return new Map()
     const rows = await this.db
-      .select({ ref: mockErpShipment.ref, shipperInn: mockErpShipment.shipperInn, shipmentId: shipment.id })
+      .select({ ref: mockErpShipment.ref, shipmentId: shipment.id })
       .from(mockErpShipment)
       .leftJoin(org, eq(org.inn, mockErpShipment.shipperInn))
       .leftJoin(shipment, and(eq(shipment.shipperOrgId, org.id), eq(shipment.erpRef, mockErpShipment.ref)))
-      .where(inArray(mockErpShipment.ref, refs))
-    return new Map(rows.map((r) => [r.ref, { shipperInn: r.shipperInn, started: r.shipmentId != null }]))
+      .where(and(eq(mockErpShipment.shipperInn, shipperInn), inArray(mockErpShipment.ref, refs)))
+    return new Map(rows.map((r) => [r.ref, { started: r.shipmentId != null }]))
   }
 
   /**
@@ -57,11 +60,10 @@ export class MockErp implements ErpAdapter {
    */
   async importShipments(list: ErpShipment[]): Promise<{ added: number; replaced: number }> {
     return this.db.transaction(async (tx) => {
-      const before = await new MockErp(tx as unknown as Db).existing(list.map((s) => s.ref))
-      for (const s of list) {
-        const was = before.get(s.ref)
-        if (was && (was.shipperInn !== s.shipperInn || was.started)) throw new Error(`отгрузку ${s.ref} заменить нельзя`)
-      }
+      const inns = [...new Set(list.map((s) => s.shipperInn))]
+      if (inns.length !== 1) throw new Error('в одной загрузке — отгрузки одного отправителя')
+      const before = await new MockErp(tx as unknown as Db).existing(inns[0]!, list.map((s) => s.ref))
+      for (const s of list) if (before.get(s.ref)?.started) throw new Error(`отгрузку ${s.ref} заменить нельзя`)
       for (const s of list) {
         const row = {
           ref: s.ref,
@@ -77,8 +79,8 @@ export class MockErp implements ErpAdapter {
           places: s.places,
           grossKg: s.grossKg,
         }
-        const { ref: _ref, ...set } = row
-        await tx.insert(mockErpShipment).values(row).onConflictDoUpdate({ target: mockErpShipment.ref, set })
+        const { ref: _ref, shipperInn: _inn, ...set } = row
+        await tx.insert(mockErpShipment).values(row).onConflictDoUpdate({ target: [mockErpShipment.shipperInn, mockErpShipment.ref], set })
       }
       return { added: list.filter((s) => !before.has(s.ref)).length, replaced: list.filter((s) => before.has(s.ref)).length }
     })

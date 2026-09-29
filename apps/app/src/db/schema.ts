@@ -401,25 +401,31 @@ export const mockOrgRegistry = mock.table('org_registry', {
 })
 
 /** Отгрузки учётной системы. Перевозчика, машину и водителя учётка не задаёт (решение 24.09). */
-export const mockErpShipment = mock.table('erp_shipment', {
-  ref: text('ref').primaryKey(),
-  shipperInn: text('shipper_inn').notNull(),
-  consigneeInn: text('consignee_inn').notNull(),
-  consigneeName: text('consignee_name').notNull(),
-  consigneeContactName: text('consignee_contact_name'),
-  consigneePhone: text('consignee_phone'),
-  loadingAddress: text('loading_address').notNull(),
-  unloadingAddress: text('unloading_address').notNull(),
-  plannedLoadingAt: timestamp('planned_loading_at', { withTimezone: true }),
-  lines: jsonb('lines').$type<{ sku: string; name: string; qty: number; grossKg: number; declaration: string | null }[]>().notNull(),
-  places: integer('places').notNull(),
-  grossKg: numeric('gross_kg', { mode: 'number' }).notNull(),
-  createdAt: createdAt(),
-})
+export const mockErpShipment = mock.table(
+  'erp_shipment',
+  {
+    /** номер отгрузки в учётке отправителя; у разных компаний номера независимы (решение 29.09) */
+    ref: text('ref').notNull(),
+    shipperInn: text('shipper_inn').notNull(),
+    consigneeInn: text('consignee_inn').notNull(),
+    consigneeName: text('consignee_name').notNull(),
+    consigneeContactName: text('consignee_contact_name'),
+    consigneePhone: text('consignee_phone'),
+    loadingAddress: text('loading_address').notNull(),
+    unloadingAddress: text('unloading_address').notNull(),
+    plannedLoadingAt: timestamp('planned_loading_at', { withTimezone: true }),
+    lines: jsonb('lines').$type<{ sku: string; name: string; qty: number; grossKg: number; declaration: string | null }[]>().notNull(),
+    places: integer('places').notNull(),
+    grossKg: numeric('gross_kg', { mode: 'number' }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.shipperInn, t.ref] })],
+)
 
 export const mockErpWriteback = mock.table('erp_writeback', {
   id: id(),
   ref: text('ref').notNull(),
+  shipperInn: text('shipper_inn'),
   status: jsonb('status').notNull(),
   at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
 })

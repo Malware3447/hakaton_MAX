@@ -29,9 +29,10 @@ export type WaybillStatus =
 export interface ErpAdapter {
   /** отгрузки, готовые к перевозке, новее since */
   listShipments(shipperInn: string, since: string | null): Promise<ErpShipment[]>
-  getShipment(ref: string): Promise<ErpShipment | null>
+  /** номер отгрузки уникален в учётке отправителя, у разных компаний номера могут совпадать */
+  getShipment(shipperInn: string, ref: string): Promise<ErpShipment | null>
   /** вернуть в учётку номер накладной, УИД, статус */
-  writeBack(ref: string, status: WaybillStatus): Promise<void>
+  writeBack(shipperInn: string, ref: string, status: WaybillStatus): Promise<void>
 }
 
 // ---------- Справочник организаций ----------

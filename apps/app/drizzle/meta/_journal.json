@@ -57,6 +57,13 @@
       "when": 1790680422141,
       "tag": "0007_poa_signers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790716990436,
+      "tag": "0008_erp_ref_per_shipper",
+      "breakpoints": true
     }
   ]
 }

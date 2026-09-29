@@ -78,7 +78,7 @@ export class ImportFlows {
         shipperInn: o.inn,
         defaultLoadingAddress: o.address,
         directory: this.directory,
-        existing: (refs) => this.erp.existing(refs),
+        existing: (refs) => this.erp.existing(o.inn, refs),
       })
     } catch (err) {
       if (!(err instanceof ImportFileError)) this.log.warn({ err }, 'не удалось разобрать таблицу отгрузок')

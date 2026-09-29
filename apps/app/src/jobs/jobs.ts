@@ -6,7 +6,7 @@ import type { NotifyMeta, Outbox } from '../bot/outbox.ts'
 import { MOVED_CARD, type CardStore } from '../bot/card-store.ts'
 import type { EffectSink } from '../core/shipments.ts'
 import type { Db } from '../db/client.ts'
-import { event, shipment } from '../db/schema.ts'
+import { event, org, shipment } from '../db/schema.ts'
 import type { MaxApi } from '../max/api.ts'
 import { MaxApiError } from '../max/api.ts'
 
@@ -180,7 +180,9 @@ export class Jobs implements Outbox, EffectSink {
     if (!s) return
     switch (effect.kind) {
       case 'erpWriteBack': {
+        const [shipper] = await this.db.select({ inn: org.inn }).from(org).where(eq(org.id, s.shipperOrgId))
         await this.erp.writeBack(
+          shipper?.inn ?? '',
           s.erpRef,
           effect.status === 'closed'
             ? { kind: 'closed', uid: s.uid ?? '', closedAt: s.updatedAt.toISOString() }

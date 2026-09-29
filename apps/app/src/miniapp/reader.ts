@@ -233,7 +233,9 @@ export class MiniAppReader {
     const rows = await this.db
       .select({ e: mockErpShipment })
       .from(mockErpShipment)
-      .leftJoin(shipment, and(eq(shipment.erpRef, mockErpShipment.ref), inArray(shipment.shipperOrgId, scope.orgIds)))
+      // перевозка той же компании: номера отгрузок у разных компаний независимы
+      .leftJoin(org, eq(org.inn, mockErpShipment.shipperInn))
+      .leftJoin(shipment, and(eq(shipment.erpRef, mockErpShipment.ref), eq(shipment.shipperOrgId, org.id)))
       .where(and(inArray(mockErpShipment.shipperInn, [...byInn.keys()]), isNull(shipment.id)))
       .orderBy(mockErpShipment.plannedLoadingAt)
     if (!rows.length) return []

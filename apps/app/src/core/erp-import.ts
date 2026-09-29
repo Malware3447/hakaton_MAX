@@ -179,8 +179,8 @@ export interface ImportContext {
   /** адрес погрузки по умолчанию — адрес компании отправителя */
   defaultLoadingAddress: string
   directory: OrgDirectory
-  /** что уже есть в учётке по этим номерам: чья отгрузка и начата ли по ней перевозка */
-  existing: (refs: string[]) => Promise<Map<string, { shipperInn: string; started: boolean }>>
+  /** что уже есть в учётке этого отправителя по этим номерам и начата ли перевозка; у других компаний номера свои */
+  existing: (refs: string[]) => Promise<Map<string, { started: boolean }>>
   now?: Date
 }
 
@@ -230,8 +230,7 @@ export async function checkRows(rows: RawRow[], ctx: ImportContext): Promise<Imp
     }
 
     const was = existing.get(ref)
-    if (was && was.shipperInn !== ctx.shipperInn) err(first.row, ref, 'такой номер уже занят отгрузкой другой компании')
-    else if (was?.started) err(first.row, ref, 'эта отгрузка уже открыта в боте — изменить её из таблицы нельзя, заведите под новым номером')
+    if (was?.started) err(first.row, ref, 'эта отгрузка уже открыта в боте — изменить её из таблицы нельзя, заведите под новым номером')
     else if (was) warn(first.row, ref, 'отгрузка с таким номером уже есть — заменим её данными из таблицы')
 
     const loadingAt = parseLoadingAt(head.loadingAt ?? null)

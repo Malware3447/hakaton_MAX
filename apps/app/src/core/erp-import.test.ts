@@ -86,18 +86,18 @@ describe('загрузка отгрузок из Excel: проверка', () =>
     expect(n).toBe(1)
   })
 
-  it('чужой номер и уже открытая отгрузка — ошибки; своя неоткрытая — замена с предупреждением', async () => {
+  it('уже открытая в боте отгрузка — ошибка; своя неоткрытая — замена с предупреждением', async () => {
+    // existing отвечает только про учётку этого отправителя: номера других компаний не мешают (решение 29.09)
     const existing = async () =>
       new Map([
-        ['А-1', { shipperInn: '1111111111', started: false }],
-        ['А-2', { shipperInn: SHIPPER, started: true }],
-        ['А-3', { shipperInn: SHIPPER, started: false }],
+        ['А-2', { started: true }],
+        ['А-3', { started: false }],
       ])
     const r = await checkRows(
       [1, 2, 3].map((i) => row(i + 1, { ref: `А-${i}`, loadingAt: '01.10.2026', consigneeInn: '1167049238', ...line })),
       ctx({ existing }),
     )
-    expect(r.errors.map((e) => e.ref)).toEqual(['А-1', 'А-2'])
+    expect(r.errors.map((e) => e.ref)).toEqual(['А-2'])
     expect(r.warnings).toEqual([{ row: 4, ref: 'А-3', text: 'отгрузка с таким номером уже есть — заменим её данными из таблицы' }])
   })
 
