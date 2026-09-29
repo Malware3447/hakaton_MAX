@@ -8,6 +8,7 @@ import { BotStore } from './bot/store.ts'
 import { CardStore } from './bot/card-store.ts'
 import { FleetService } from './core/fleet.ts'
 import { InviteService } from './core/invite-service.ts'
+import { OrgInviteService } from './core/org-invites.ts'
 import { ShipmentService } from './core/shipments.ts'
 import { TitleService } from './core/titles.ts'
 import { SignatureService } from './core/signatures.ts'
@@ -94,6 +95,8 @@ if (env.DATABASE_URL) {
       me.username,
       app.log,
       erp,
+      // Люди компании (HAKATON-48): «Попросить доступ», «Добавить сотрудника», ссылки start=org_
+      new OrgInviteService(db),
     )
     await api
       .setCommands([
